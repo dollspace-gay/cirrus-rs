@@ -9,8 +9,8 @@ members = [
 
 [workspace.package]
 version = "0.1.0"
-edition = "2024"
-rust-version = "1.85"
+edition = "2021"
+rust-version = "1.75"
 license = "MIT"
 repository = "https://github.com/yourusername/cirrus-rs"
 authors = ["Your Name <your@email.com>"]
@@ -37,7 +37,7 @@ ciborium = "0.2"
 
 # Database
 rusqlite = { version = "0.34", features = ["bundled"] }
-tokio-rusqlite = "0.6"
+tokio-rusqlite = "0.7"
 
 # Cryptography
 k256 = { version = "0.13", features = ["ecdsa", "sha256"] }
@@ -77,6 +77,8 @@ futures = "0.3"
 async-trait = "0.1"
 once_cell = "1.20"
 parking_lot = "0.12"
+hex = "0.4"
+serde_bytes = "0.11"
 
 # Testing
 tokio-test = "0.4"

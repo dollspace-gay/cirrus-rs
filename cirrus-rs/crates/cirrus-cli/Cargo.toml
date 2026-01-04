@@ -49,6 +49,7 @@ url.workspace = true
 chrono.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+hex.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
