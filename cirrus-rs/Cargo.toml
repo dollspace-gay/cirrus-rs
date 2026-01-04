@@ -1,0 +1,103 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cirrus-common",
+    "crates/cirrus-oauth",
+    "crates/cirrus-pds",
+    "crates/cirrus-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/yourusername/cirrus-rs"
+authors = ["Your Name <your@email.com>"]
+
+[workspace.dependencies]
+# Workspace crates
+cirrus-common = { path = "crates/cirrus-common" }
+cirrus-oauth = { path = "crates/cirrus-oauth" }
+cirrus-pds = { path = "crates/cirrus-pds" }
+
+# Async runtime
+tokio = { version = "1.43", features = ["full"] }
+
+# Web framework
+axum = { version = "0.8", features = ["macros", "ws"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+hyper = { version = "1.6", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ciborium = "0.2"
+
+# Database
+rusqlite = { version = "0.34", features = ["bundled"] }
+tokio-rusqlite = "0.6"
+
+# Cryptography
+k256 = { version = "0.13", features = ["ecdsa", "sha256"] }
+sha2 = "0.10"
+rand = "0.9"
+base64 = "0.22"
+multibase = "0.9"
+multihash = "0.19"
+
+# JWT
+jsonwebtoken = "10"
+
+# Password hashing
+bcrypt = "0.17"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+dialoguer = "0.11"
+console = "0.15"
+indicatif = "0.17"
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# Utilities
+url = "2.5"
+uuid = { version = "1.16", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bytes = "1.10"
+futures = "0.3"
+async-trait = "0.1"
+once_cell = "1.20"
+parking_lot = "0.12"
+
+# Testing
+tokio-test = "0.4"
+wiremock = "0.6"
+tempfile = "3.17"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,47 @@
+[package]
+name = "cirrus-oauth"
+description = "OAuth 2.1 provider with AT Protocol extensions for Cirrus PDS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+cirrus-common.workspace = true
+
+# Async
+tokio.workspace = true
+async-trait.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Cryptography
+sha2.workspace = true
+rand.workspace = true
+base64.workspace = true
+
+# JWT
+jsonwebtoken.workspace = true
+
+# Error handling
+thiserror.workspace = true
+
+# HTTP client (for client resolution)
+reqwest.workspace = true
+
+# Utilities
+url.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true
