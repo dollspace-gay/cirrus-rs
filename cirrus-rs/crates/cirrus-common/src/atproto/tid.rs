@@ -34,11 +34,12 @@ impl Tid {
 
     /// Generates a new TID based on the current timestamp.
     #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn now() -> Self {
         Self::from_timestamp(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_micros() as u64)
+                .map(|d| d.as_micros() as u64) // Safe: won't overflow until year ~586,000
                 .unwrap_or(0),
         )
     }

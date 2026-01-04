@@ -40,7 +40,7 @@ pub enum OAuthError {
     #[error("PKCE verification failed: {0}")]
     PkceError(String),
 
-    /// DPoP verification failed.
+    /// `DPoP` verification failed.
     #[error("DPoP error: {0}")]
     DpopError(String),
 

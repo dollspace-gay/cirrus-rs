@@ -2,7 +2,7 @@
 //!
 //! This crate implements:
 //! - RFC 7636 PKCE (Proof Key for Code Exchange)
-//! - RFC 9449 DPoP (Demonstrating Proof of Possession)
+//! - RFC 9449 `DPoP` (Demonstrating Proof of Possession)
 //! - RFC 9126 PAR (Pushed Authorization Requests)
 //! - OAuth 2.1 authorization code flow
 //! - AT Protocol extensions for "Login with Bluesky"

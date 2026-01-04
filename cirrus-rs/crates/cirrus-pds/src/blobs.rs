@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{PdsError, Result};
+use crate::error::Result;
 
 /// A blob reference.
 #[derive(Debug, Clone, Serialize, Deserialize)]

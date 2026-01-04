@@ -18,7 +18,7 @@ const RAW_CODEC: u64 = 0x55;
 const DAG_CBOR_CODEC: u64 = 0x71;
 
 /// Multihash code for SHA-256.
-const SHA256_CODE: u64 = 0x12;
+const SHA256_CODE: u8 = 0x12;
 
 /// CID version 1.
 const CID_VERSION: u8 = 1;
@@ -62,7 +62,7 @@ impl Cid {
     fn sha256_multihash(data: &[u8]) -> Vec<u8> {
         let digest = Sha256::digest(data);
         let mut multihash = Vec::with_capacity(2 + 32);
-        multihash.push(SHA256_CODE as u8); // hash function code
+        multihash.push(SHA256_CODE); // hash function code
         multihash.push(32); // digest length
         multihash.extend_from_slice(&digest);
         multihash
@@ -82,8 +82,7 @@ impl Cid {
     #[must_use]
     pub fn to_string_base32(&self) -> String {
         let bytes = self.to_bytes();
-        let encoded = multibase::encode(multibase::Base::Base32Lower, &bytes);
-        encoded
+        multibase::encode(multibase::Base::Base32Lower, &bytes)
     }
 
     /// Encodes the CID to a base58btc string.
@@ -175,20 +174,20 @@ impl Cid {
 
     /// Returns true if this is a DAG-CBOR CID.
     #[must_use]
-    pub fn is_dag_cbor(&self) -> bool {
+    pub const fn is_dag_cbor(&self) -> bool {
         self.codec == DAG_CBOR_CODEC
     }
 
     /// Returns true if this is a raw CID.
     #[must_use]
-    pub fn is_raw(&self) -> bool {
+    pub const fn is_raw(&self) -> bool {
         self.codec == RAW_CODEC
     }
 
     /// Returns the SHA-256 digest bytes (without multihash prefix).
     #[must_use]
     pub fn digest(&self) -> Option<&[u8]> {
-        if self.hash.len() >= 2 && self.hash[0] == SHA256_CODE as u8 {
+        if self.hash.len() >= 2 && self.hash[0] == SHA256_CODE {
             Some(&self.hash[2..])
         } else {
             None

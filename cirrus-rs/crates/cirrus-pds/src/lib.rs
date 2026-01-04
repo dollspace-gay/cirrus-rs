@@ -1,7 +1,7 @@
 //! AT Protocol Personal Data Server (PDS) implementation.
 //!
 //! This crate provides the core PDS functionality:
-//! - SQLite repository storage
+//! - `SQLite` repository storage
 //! - XRPC endpoint handlers
 //! - WebSocket firehose for federation
 //! - Multi-method authentication

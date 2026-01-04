@@ -27,7 +27,7 @@ pub struct ParRequest {
     pub code_challenge_method: String,
     /// Optional state parameter.
     pub state: Option<String>,
-    /// Optional nonce for OpenID Connect.
+    /// Optional nonce for `OpenID` Connect.
     pub nonce: Option<String>,
     /// When the request expires (Unix timestamp).
     pub expires_at: u64,
@@ -112,7 +112,7 @@ pub struct ParResponse {
 impl ParResponse {
     /// Creates a new PAR response.
     #[must_use]
-    pub fn new(request_uri: String) -> Self {
+    pub const fn new(request_uri: String) -> Self {
         Self {
             request_uri,
             expires_in: PAR_REQUEST_LIFETIME_SECS,

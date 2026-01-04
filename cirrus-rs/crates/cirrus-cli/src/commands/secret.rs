@@ -23,9 +23,8 @@ pub fn generate_key() -> Result<()> {
 /// Generates a new JWT secret.
 pub fn generate_jwt_secret() -> Result<()> {
     use rand::Rng;
-
-    let mut rng = rand::rng();
-    let bytes: Vec<u8> = (0..32).map(|_| rng.random()).collect();
+    let mut rng = rand::thread_rng();
+    let bytes: Vec<u8> = (0..32).map(|_| rng.gen::<u8>()).collect();
     let secret = hex::encode(&bytes);
 
     println!("{}", style("Generated JWT secret:").bold().green());

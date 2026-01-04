@@ -53,7 +53,7 @@ pub fn verify_challenge(code_verifier: &str, code_challenge: &str) -> Result<()>
 
 /// Computes the S256 code challenge from a code verifier.
 ///
-/// S256: BASE64URL(SHA256(code_verifier))
+/// S256: `BASE64URL(SHA256(code_verifier))`
 #[must_use]
 pub fn compute_s256_challenge(code_verifier: &str) -> String {
     let hash = Sha256::digest(code_verifier.as_bytes());
@@ -64,8 +64,8 @@ pub fn compute_s256_challenge(code_verifier: &str) -> String {
 #[must_use]
 pub fn generate_verifier() -> String {
     use rand::Rng;
-    let mut rng = rand::rng();
-    let bytes: Vec<u8> = (0..32).map(|_| rng.random()).collect();
+    let mut rng = rand::thread_rng();
+    let bytes: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
     base64_url_encode(&bytes)
 }
 

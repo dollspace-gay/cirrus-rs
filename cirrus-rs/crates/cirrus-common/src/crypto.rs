@@ -4,7 +4,6 @@
 //! used for repository commits and service authentication.
 
 use k256::ecdsa::{signature::Signer, signature::Verifier, Signature, SigningKey, VerifyingKey};
-use k256::elliptic_curve::sec1::ToEncodedPoint;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 
@@ -156,14 +155,20 @@ impl PublicKey {
             .map_err(|e| Error::Crypto(format!("verification failed: {e}")))
     }
 
-    /// Returns the JWK thumbprint for DPoP binding.
+    /// Returns the JWK thumbprint for `DPoP` binding.
+    ///
+    /// # Panics
+    ///
+    /// This function will not panic as the public key is always valid.
     #[must_use]
+    #[allow(clippy::expect_used)]
     pub fn jwk_thumbprint(&self) -> String {
         use crate::cid::sha256;
 
         let point = self.verifying_key.to_encoded_point(false);
-        let x = base64url_encode(point.x().expect("valid point").as_slice());
-        let y = base64url_encode(point.y().expect("valid point").as_slice());
+        // Safety: Uncompressed points always have x and y coordinates
+        let x = base64url_encode(point.x().expect("uncompressed point has x").as_slice());
+        let y = base64url_encode(point.y().expect("uncompressed point has y").as_slice());
 
         // JWK thumbprint is SHA-256 of the canonical JSON
         let jwk_json = format!(r#"{{"crv":"secp256k1","kty":"EC","x":"{x}","y":"{y}"}}"#);
@@ -198,14 +203,20 @@ pub struct Jwk {
 
 impl Jwk {
     /// Creates a JWK from a public key.
+    ///
+    /// # Panics
+    ///
+    /// This function will not panic as the public key is always valid.
     #[must_use]
+    #[allow(clippy::expect_used)]
     pub fn from_public_key(public_key: &PublicKey) -> Self {
         let point = public_key.verifying_key.to_encoded_point(false);
+        // Safety: Uncompressed points always have x and y coordinates
         Self {
             kty: "EC".to_string(),
             crv: "secp256k1".to_string(),
-            x: base64url_encode(point.x().expect("valid point").as_slice()),
-            y: base64url_encode(point.y().expect("valid point").as_slice()),
+            x: base64url_encode(point.x().expect("uncompressed point has x").as_slice()),
+            y: base64url_encode(point.y().expect("uncompressed point has y").as_slice()),
             d: None,
         }
     }

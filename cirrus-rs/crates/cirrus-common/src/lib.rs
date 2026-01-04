@@ -1,7 +1,7 @@
 //! Common types and utilities for Cirrus AT Protocol PDS.
 //!
 //! This crate provides shared functionality used across the Cirrus ecosystem:
-//! - AT Protocol primitives (DID, Handle, TID, AtUri)
+//! - AT Protocol primitives (DID, Handle, TID, `AtUri`)
 //! - CBOR encoding/decoding utilities
 //! - CID and multiformats handling
 //! - Cryptography utilities (Secp256k1, SHA-256)

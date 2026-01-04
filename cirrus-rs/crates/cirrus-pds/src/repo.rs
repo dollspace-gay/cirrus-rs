@@ -1,7 +1,5 @@
 //! Repository operations for AT Protocol.
 
-use crate::error::Result;
-
 /// A repository operation.
 #[derive(Debug, Clone)]
 pub enum RepoOp {

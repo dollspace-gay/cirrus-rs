@@ -52,7 +52,7 @@ pub struct Sequencer<'a> {
 impl<'a> Sequencer<'a> {
     /// Creates a new sequencer.
     #[must_use]
-    pub fn new(storage: &'a SqliteStorage) -> Self {
+    pub const fn new(storage: &'a SqliteStorage) -> Self {
         Self { storage }
     }
 

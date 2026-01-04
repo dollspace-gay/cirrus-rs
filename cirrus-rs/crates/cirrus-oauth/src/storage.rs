@@ -72,7 +72,7 @@ pub trait OAuthStorage: Send + Sync {
 
     // DPoP nonces
 
-    /// Saves a DPoP nonce.
+    /// Saves a `DPoP` nonce.
     async fn save_nonce(&self, nonce: &str) -> Result<()>;
 
     /// Checks if a nonce is valid (exists and not expired).

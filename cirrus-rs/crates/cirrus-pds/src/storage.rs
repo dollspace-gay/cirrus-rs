@@ -1,10 +1,10 @@
-//! SQLite storage layer for AT Protocol repositories.
+//! `SQLite` storage layer for AT Protocol repositories.
 
 use rusqlite::{Connection, params};
 
-use crate::error::{PdsError, Result};
+use crate::error::Result;
 
-/// Repository storage backed by SQLite.
+/// Repository storage backed by `SQLite`.
 pub struct SqliteStorage {
     conn: Connection,
 }
@@ -191,7 +191,7 @@ impl SqliteStorage {
     pub fn set_active(&self, active: bool) -> Result<()> {
         self.conn.execute(
             "UPDATE repo_state SET active = ? WHERE id = 1",
-            params![if active { 1 } else { 0 }],
+            params![i32::from(active)],
         )?;
         Ok(())
     }

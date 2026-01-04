@@ -52,7 +52,7 @@ impl AtUri {
 
     /// Creates an AT URI for a collection (without rkey).
     #[must_use]
-    pub fn collection(authority: &str, collection: &str) -> Self {
+    pub fn for_collection(authority: &str, collection: &str) -> Self {
         Self(format!("at://{authority}/{collection}"))
     }
 

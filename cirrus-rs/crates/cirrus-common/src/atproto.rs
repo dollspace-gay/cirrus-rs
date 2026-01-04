@@ -1,4 +1,4 @@
-//! AT Protocol primitives: DID, Handle, TID, and AtUri.
+//! AT Protocol primitives: DID, Handle, TID, and `AtUri`.
 
 mod at_uri;
 mod did;

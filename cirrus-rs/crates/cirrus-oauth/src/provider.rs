@@ -23,7 +23,7 @@ pub struct OAuthProvider<S: OAuthStorage> {
 impl<S: OAuthStorage> OAuthProvider<S> {
     /// Creates a new OAuth provider.
     #[must_use]
-    pub fn new(config: OAuthProviderConfig, storage: S) -> Self {
+    pub const fn new(config: OAuthProviderConfig, storage: S) -> Self {
         Self { config, storage }
     }
 

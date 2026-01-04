@@ -1,4 +1,4 @@
-//! DPoP (Demonstrating Proof of Possession) implementation.
+//! `DPoP` (Demonstrating Proof of Possession) implementation.
 //!
 //! Implements RFC 9449 for binding tokens to client keys.
 
@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{OAuthError, Result};
 
-/// DPoP proof JWT claims.
+/// `DPoP` proof JWT claims.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DpopClaims {
     /// JWT ID (unique identifier for replay prevention).
@@ -25,7 +25,7 @@ pub struct DpopClaims {
     pub nonce: Option<String>,
 }
 
-/// DPoP proof header.
+/// `DPoP` proof header.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DpopHeader {
     /// Algorithm (must be ES256 for AT Protocol).
@@ -36,7 +36,7 @@ pub struct DpopHeader {
     pub jwk: DpopJwk,
 }
 
-/// JWK for DPoP proofs.
+/// JWK for `DPoP` proofs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DpopJwk {
     /// Key type.
@@ -49,10 +49,10 @@ pub struct DpopJwk {
     pub y: String,
 }
 
-/// Maximum age for DPoP proofs (5 minutes).
+/// Maximum age for `DPoP` proofs (5 minutes).
 const MAX_PROOF_AGE_SECS: u64 = 300;
 
-/// Verifies a DPoP proof JWT.
+/// Verifies a `DPoP` proof JWT.
 ///
 /// # Errors
 /// Returns an error if the proof is invalid.
@@ -143,7 +143,7 @@ pub fn verify_proof(
     Ok(header.jwk)
 }
 
-/// Computes the JWK thumbprint for a DPoP key.
+/// Computes the JWK thumbprint for a `DPoP` key.
 #[must_use]
 pub fn compute_jwk_thumbprint(jwk: &DpopJwk) -> String {
     use sha2::{Digest, Sha256};
@@ -165,12 +165,12 @@ fn compute_token_hash(token: &str) -> String {
     base64_url_encode(&hash)
 }
 
-/// Generates a new DPoP nonce.
+/// Generates a new `DPoP` nonce.
 #[must_use]
 pub fn generate_nonce() -> String {
     use rand::Rng;
-    let mut rng = rand::rng();
-    let bytes: Vec<u8> = (0..16).map(|_| rng.random()).collect();
+    let mut rng = rand::thread_rng();
+    let bytes: Vec<u8> = (0..16).map(|_| rng.gen()).collect();
     base64_url_encode(&bytes)
 }
 

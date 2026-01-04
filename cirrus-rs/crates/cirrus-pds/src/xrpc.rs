@@ -21,25 +21,25 @@ impl XrpcError {
         }
     }
 
-    /// Creates an InvalidRequest error.
+    /// Creates an `InvalidRequest` error.
     #[must_use]
     pub fn invalid_request(message: impl Into<String>) -> Self {
         Self::new("InvalidRequest", message)
     }
 
-    /// Creates an AuthenticationRequired error.
+    /// Creates an `AuthenticationRequired` error.
     #[must_use]
     pub fn auth_required(message: impl Into<String>) -> Self {
         Self::new("AuthenticationRequired", message)
     }
 
-    /// Creates a RecordNotFound error.
+    /// Creates a `RecordNotFound` error.
     #[must_use]
     pub fn record_not_found(message: impl Into<String>) -> Self {
         Self::new("RecordNotFound", message)
     }
 
-    /// Creates an AccountDeactivated error.
+    /// Creates an `AccountDeactivated` error.
     #[must_use]
     pub fn account_deactivated() -> Self {
         Self::new("AccountDeactivated", "Account is deactivated")
@@ -90,7 +90,7 @@ pub struct CreateRecordInput {
     pub validate: bool,
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 

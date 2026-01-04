@@ -36,19 +36,19 @@ serde_json = "1.0"
 ciborium = "0.2"
 
 # Database
-rusqlite = { version = "0.34", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 tokio-rusqlite = "0.7"
 
 # Cryptography
 k256 = { version = "0.13", features = ["ecdsa", "sha256"] }
 sha2 = "0.10"
-rand = "0.9"
+rand = "0.8"
 base64 = "0.22"
 multibase = "0.9"
 multihash = "0.19"
 
 # JWT
-jsonwebtoken = "10"
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 
 # Password hashing
 bcrypt = "0.17"

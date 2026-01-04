@@ -26,7 +26,7 @@ pub struct TokenData {
     pub sub: String,
     /// Granted scope.
     pub scope: String,
-    /// DPoP key thumbprint (if DPoP-bound).
+    /// `DPoP` key thumbprint (if DPoP-bound).
     pub dpop_jkt: Option<String>,
     /// When the token was issued (Unix timestamp).
     pub issued_at: u64,
@@ -106,8 +106,8 @@ pub fn generate_refresh_token() -> String {
 /// Generates a cryptographically secure random string.
 fn generate_random_string(len: usize) -> String {
     use rand::Rng;
-    let mut rng = rand::rng();
-    let bytes: Vec<u8> = (0..len).map(|_| rng.random()).collect();
+    let mut rng = rand::thread_rng();
+    let bytes: Vec<u8> = (0..len).map(|_| rng.gen()).collect();
     base64_url_encode(&bytes)
 }
 
@@ -121,7 +121,7 @@ fn base64_url_encode(data: &[u8]) -> String {
 pub struct TokenResponse {
     /// The access token.
     pub access_token: String,
-    /// Token type (always "DPoP" for AT Protocol).
+    /// Token type (always "`DPoP`" for AT Protocol).
     pub token_type: String,
     /// Lifetime in seconds.
     pub expires_in: u64,
