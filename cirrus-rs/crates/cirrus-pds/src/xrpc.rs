@@ -103,6 +103,34 @@ pub struct CreateRecordOutput {
     pub cid: String,
 }
 
+/// Put record input.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PutRecordInput {
+    /// Repository DID.
+    pub repo: String,
+    /// Collection name.
+    pub collection: String,
+    /// Record key.
+    pub rkey: String,
+    /// Record value.
+    pub record: serde_json::Value,
+    /// Validate the record.
+    #[serde(default = "default_true")]
+    pub validate: bool,
+    /// Expected CID for swap (optional).
+    #[serde(rename = "swapRecord", skip_serializing_if = "Option::is_none")]
+    pub swap_record: Option<String>,
+}
+
+/// Put record output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PutRecordOutput {
+    /// AT URI of the record.
+    pub uri: String,
+    /// CID of the record.
+    pub cid: String,
+}
+
 /// Delete record input.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteRecordInput {
@@ -112,6 +140,9 @@ pub struct DeleteRecordInput {
     pub collection: String,
     /// Record key.
     pub rkey: String,
+    /// Expected CID for swap (optional).
+    #[serde(rename = "swapRecord", skip_serializing_if = "Option::is_none")]
+    pub swap_record: Option<String>,
 }
 
 /// List records output.
@@ -187,6 +218,20 @@ pub struct DeactivateAccountInput {
     /// Delete the account after deactivation.
     #[serde(rename = "deleteAfter", skip_serializing_if = "Option::is_none")]
     pub delete_after: Option<String>,
+}
+
+/// Get preferences output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetPreferencesOutput {
+    /// Array of preference objects.
+    pub preferences: Vec<serde_json::Value>,
+}
+
+/// Put preferences input.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PutPreferencesInput {
+    /// Array of preference objects.
+    pub preferences: Vec<serde_json::Value>,
 }
 
 #[cfg(test)]

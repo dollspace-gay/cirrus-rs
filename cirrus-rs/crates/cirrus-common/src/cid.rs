@@ -107,6 +107,15 @@ impl Cid {
     /// # Errors
     /// Returns an error if the CID format is invalid.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        let (cid, _) = Self::from_bytes_with_len(bytes)?;
+        Ok(cid)
+    }
+
+    /// Parses a CID from bytes and returns the number of bytes consumed.
+    ///
+    /// # Errors
+    /// Returns an error if the CID format is invalid.
+    pub fn from_bytes_with_len(bytes: &[u8]) -> Result<(Self, usize), Error> {
         if bytes.is_empty() {
             return Err(Error::InvalidCid("empty CID".into()));
         }
@@ -126,18 +135,30 @@ impl Cid {
             .ok_or_else(|| Error::InvalidCid("invalid codec varint".into()))?;
         pos += consumed;
 
-        // Rest is the multihash
-        let hash = bytes[pos..].to_vec();
-
-        if hash.len() < 2 {
+        // Multihash: hash code + length + digest
+        if bytes.len() < pos + 2 {
             return Err(Error::InvalidCid("multihash too short".into()));
         }
 
-        Ok(Self {
-            version,
-            codec,
-            hash,
-        })
+        let hash_code = bytes[pos];
+        let hash_len = bytes[pos + 1] as usize;
+        let total_hash_len = 2 + hash_len;
+
+        if bytes.len() < pos + total_hash_len {
+            return Err(Error::InvalidCid("multihash truncated".into()));
+        }
+
+        let hash = bytes[pos..pos + total_hash_len].to_vec();
+        pos += total_hash_len;
+
+        Ok((
+            Self {
+                version,
+                codec,
+                hash,
+            },
+            pos,
+        ))
     }
 
     fn encode_varint(mut value: u64) -> Vec<u8> {

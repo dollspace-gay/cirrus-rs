@@ -4,22 +4,25 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{Query, State},
+    extract::{Query, State, WebSocketUpgrade, ws::{Message, WebSocket}},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
     Router,
 };
+use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 
 use crate::error::PdsError;
 use crate::lexicon::LexiconStore;
 use crate::middleware::{RequireAdmin, RequireAuth};
 use crate::repo::{generate_rkey, make_at_uri};
+use crate::sequencer::Firehose;
 use crate::storage::SqliteStorage;
 use crate::xrpc::{
     CheckAccountStatusOutput, CreateRecordInput, CreateRecordOutput, CreateSessionInput,
-    DeactivateAccountInput, DescribeRepoOutput, GetRecordOutput, ListRecordsOutput,
+    DeactivateAccountInput, DescribeRepoOutput, GetPreferencesOutput, GetRecordOutput,
+    ListRecordEntry, ListRecordsOutput, PutPreferencesInput, PutRecordInput, PutRecordOutput,
     SessionOutput, XrpcError,
 };
 
@@ -39,6 +42,8 @@ pub struct AppState {
     pub handle: String,
     /// Public key in multibase format for DID document.
     pub public_key_multibase: String,
+    /// Firehose broadcast channel.
+    pub firehose: Firehose,
 }
 
 /// Creates the XRPC router.
@@ -54,14 +59,22 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/xrpc/com.atproto.server.activateAccount", post(activate_account))
         .route("/xrpc/com.atproto.server.deactivateAccount", post(deactivate_account))
         .route("/xrpc/com.atproto.server.checkAccountStatus", get(check_account_status))
+        // Actor endpoints
+        .route("/xrpc/app.bsky.actor.getPreferences", get(get_preferences))
+        .route("/xrpc/app.bsky.actor.putPreferences", post(put_preferences))
         // Repo endpoints
         .route("/xrpc/com.atproto.repo.describeRepo", get(describe_repo))
         .route("/xrpc/com.atproto.repo.getRecord", get(get_record))
         .route("/xrpc/com.atproto.repo.listRecords", get(list_records))
         .route("/xrpc/com.atproto.repo.createRecord", post(create_record))
+        .route("/xrpc/com.atproto.repo.putRecord", post(put_record))
         .route("/xrpc/com.atproto.repo.deleteRecord", post(delete_record))
         // Sync endpoints
         .route("/xrpc/com.atproto.sync.getHead", get(get_head))
+        .route("/xrpc/com.atproto.sync.getLatestCommit", get(get_latest_commit))
+        .route("/xrpc/com.atproto.sync.getBlob", get(get_blob))
+        .route("/xrpc/com.atproto.sync.getRepo", get(get_repo))
+        .route("/xrpc/com.atproto.sync.subscribeRepos", get(subscribe_repos))
         // Identity endpoints
         .route("/xrpc/com.atproto.identity.resolveHandle", get(resolve_handle))
         // Health check
@@ -109,6 +122,29 @@ pub struct ListRecordsParams {
 pub struct ResolveHandleParams {
     /// Handle to resolve.
     pub handle: String,
+}
+
+/// Query parameters for getLatestCommit.
+#[derive(Debug, Deserialize)]
+pub struct GetLatestCommitParams {
+    /// Repository DID.
+    pub did: String,
+}
+
+/// Query parameters for getBlob.
+#[derive(Debug, Deserialize)]
+pub struct GetBlobParams {
+    /// Repository DID.
+    pub did: String,
+    /// Blob CID.
+    pub cid: String,
+}
+
+/// Query parameters for getRepo.
+#[derive(Debug, Deserialize)]
+pub struct GetRepoParams {
+    /// Repository DID.
+    pub did: String,
 }
 
 // ============================================================================
@@ -221,6 +257,27 @@ async fn check_account_status(
     }).into_response()
 }
 
+async fn get_preferences(
+    State(state): State<Arc<AppState>>,
+    RequireAuth(_auth): RequireAuth,
+) -> Response {
+    match state.storage.get_preferences() {
+        Ok(prefs) => Json(GetPreferencesOutput { preferences: prefs }).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn put_preferences(
+    State(state): State<Arc<AppState>>,
+    RequireAuth(_auth): RequireAuth,
+    Json(input): Json<PutPreferencesInput>,
+) -> Response {
+    if let Err(e) = state.storage.put_preferences(&input.preferences) {
+        return e.into_response();
+    }
+    StatusCode::OK.into_response()
+}
+
 async fn describe_repo(
     State(state): State<Arc<AppState>>,
     Query(params): Query<DescribeRepoParams>,
@@ -280,13 +337,44 @@ async fn get_record(
 }
 
 async fn list_records(
-    State(_state): State<Arc<AppState>>,
-    Query(_params): Query<ListRecordsParams>,
-) -> Json<ListRecordsOutput> {
-    Json(ListRecordsOutput {
-        records: vec![],
-        cursor: None,
-    })
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListRecordsParams>,
+) -> Response {
+    if params.repo != state.did && params.repo != state.handle {
+        return PdsError::RepoNotFound(params.repo).into_response();
+    }
+
+    let limit = params.limit.unwrap_or(50).min(100);
+    let reverse = params.reverse.unwrap_or(false);
+
+    let entries = match state.storage.list_records(
+        &params.collection,
+        limit,
+        params.cursor.as_deref(),
+        reverse,
+    ) {
+        Ok(e) => e,
+        Err(e) => return e.into_response(),
+    };
+
+    let mut records = Vec::with_capacity(entries.len());
+    for entry in &entries {
+        let value: serde_json::Value = match cirrus_common::cbor::decode(&entry.bytes) {
+            Ok(v) => v,
+            Err(e) => return PdsError::InvalidRecord(e.to_string()).into_response(),
+        };
+        let cid = cirrus_common::cid::Cid::for_cbor(&entry.bytes).to_string();
+        let uri = make_at_uri(&state.did, &params.collection, &entry.rkey);
+        records.push(ListRecordEntry { uri, cid, value });
+    }
+
+    let cursor = if records.len() == limit as usize {
+        entries.last().map(|e| e.rkey.clone())
+    } else {
+        None
+    };
+
+    Json(ListRecordsOutput { records, cursor }).into_response()
 }
 
 async fn create_record(
@@ -336,12 +424,11 @@ async fn create_record(
     Json(CreateRecordOutput { uri, cid }).into_response()
 }
 
-async fn delete_record(
+async fn put_record(
     State(state): State<Arc<AppState>>,
     RequireAdmin(auth): RequireAdmin,
-    Json(input): Json<crate::xrpc::DeleteRecordInput>,
+    Json(input): Json<PutRecordInput>,
 ) -> Response {
-    // RequireAdmin already verified the user is the PDS owner
     if input.repo != auth.did {
         return PdsError::NotAuthorized("repo mismatch".into()).into_response();
     }
@@ -354,7 +441,89 @@ async fn delete_record(
         return PdsError::AccountDeactivated.into_response();
     }
 
-    StatusCode::OK.into_response()
+    // Check swap_record if provided (optimistic concurrency)
+    let block_key = format!("{}:{}", input.collection, input.rkey);
+    if let Some(ref expected_cid) = input.swap_record {
+        match state.storage.get_block(&block_key) {
+            Ok(Some(existing)) => {
+                let current_cid = cirrus_common::cid::Cid::for_cbor(&existing).to_string();
+                if &current_cid != expected_cid {
+                    return PdsError::InvalidRecord("swap_record CID mismatch".into()).into_response();
+                }
+            }
+            Ok(None) => {
+                return PdsError::RecordNotFound(block_key).into_response();
+            }
+            Err(e) => return e.into_response(),
+        }
+    }
+
+    if input.validate {
+        if let Err(e) = state.lexicons.validate_record(&input.collection, &input.record) {
+            return e.into_response();
+        }
+    }
+
+    let cbor_bytes = match cirrus_common::cbor::encode(&input.record) {
+        Ok(b) => b,
+        Err(e) => return PdsError::InvalidRecord(e.to_string()).into_response(),
+    };
+
+    let cid = cirrus_common::cid::Cid::for_cbor(&cbor_bytes).to_string();
+
+    let repo_state = match state.storage.get_repo_state() {
+        Ok(s) => s,
+        Err(e) => return e.into_response(),
+    };
+    if let Err(e) = state.storage.put_block(&block_key, &cbor_bytes, repo_state.rev.as_deref()) {
+        return e.into_response();
+    }
+
+    let uri = make_at_uri(&auth.did, &input.collection, &input.rkey);
+
+    Json(PutRecordOutput { uri, cid }).into_response()
+}
+
+async fn delete_record(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(auth): RequireAdmin,
+    Json(input): Json<crate::xrpc::DeleteRecordInput>,
+) -> Response {
+    if input.repo != auth.did {
+        return PdsError::NotAuthorized("repo mismatch".into()).into_response();
+    }
+
+    let is_active = match state.storage.is_active() {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+    if !is_active {
+        return PdsError::AccountDeactivated.into_response();
+    }
+
+    let block_key = format!("{}:{}", input.collection, input.rkey);
+
+    // Check swap_record if provided
+    if let Some(ref expected_cid) = input.swap_record {
+        match state.storage.get_block(&block_key) {
+            Ok(Some(existing)) => {
+                let current_cid = cirrus_common::cid::Cid::for_cbor(&existing).to_string();
+                if &current_cid != expected_cid {
+                    return PdsError::InvalidRecord("swap_record CID mismatch".into()).into_response();
+                }
+            }
+            Ok(None) => {
+                return PdsError::RecordNotFound(block_key).into_response();
+            }
+            Err(e) => return e.into_response(),
+        }
+    }
+
+    match state.storage.delete_block(&block_key) {
+        Ok(true) => StatusCode::OK.into_response(),
+        Ok(false) => PdsError::RecordNotFound(block_key).into_response(),
+        Err(e) => e.into_response(),
+    }
 }
 
 async fn get_head(
@@ -365,6 +534,145 @@ async fn get_head(
             "root": repo_state.root_cid
         })).into_response(),
         Err(e) => e.into_response(),
+    }
+}
+
+async fn get_latest_commit(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<GetLatestCommitParams>,
+) -> Response {
+    if params.did != state.did {
+        return PdsError::RepoNotFound(params.did).into_response();
+    }
+
+    match state.storage.get_repo_state() {
+        Ok(repo_state) => Json(serde_json::json!({
+            "cid": repo_state.root_cid,
+            "rev": repo_state.rev
+        })).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn get_blob(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<GetBlobParams>,
+) -> Response {
+    if params.did != state.did {
+        return PdsError::RepoNotFound(params.did).into_response();
+    }
+
+    match state.storage.get_block(&params.cid) {
+        Ok(Some(bytes)) => (
+            StatusCode::OK,
+            [("content-type", "application/octet-stream")],
+            bytes,
+        ).into_response(),
+        Ok(None) => PdsError::RecordNotFound(format!("blob not found: {}", params.cid)).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn get_repo(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<GetRepoParams>,
+) -> Response {
+    if params.did != state.did {
+        return PdsError::RepoNotFound(params.did).into_response();
+    }
+
+    let blocks = match state.storage.get_all_blocks() {
+        Ok(b) => b,
+        Err(e) => return e.into_response(),
+    };
+
+    let repo_state = match state.storage.get_repo_state() {
+        Ok(s) => s,
+        Err(e) => return e.into_response(),
+    };
+
+    let root_cid = match repo_state.root_cid {
+        Some(ref cid_str) => cirrus_common::cid::Cid::from_string(cid_str)
+            .unwrap_or_else(|_| cirrus_common::cid::Cid::for_cbor(&[])),
+        None => cirrus_common::cid::Cid::for_cbor(&[]),
+    };
+
+    let mut car_buf = Vec::new();
+    let mut writer = match cirrus_common::car::CarWriter::new(&mut car_buf, root_cid) {
+        Ok(w) => w,
+        Err(e) => return PdsError::InvalidRecord(format!("CAR header error: {e}")).into_response(),
+    };
+
+    for block in blocks {
+        let cid = cirrus_common::cid::Cid::for_cbor(&block.bytes);
+        if let Err(e) = writer.write_block(&cid, &block.bytes) {
+            return PdsError::InvalidRecord(format!("CAR block error: {e}")).into_response();
+        }
+    }
+
+    drop(writer);
+
+    (
+        StatusCode::OK,
+        [("content-type", "application/vnd.ipld.car")],
+        car_buf,
+    ).into_response()
+}
+
+async fn subscribe_repos(
+    State(state): State<Arc<AppState>>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    ws.on_upgrade(|socket| handle_firehose(socket, state))
+}
+
+async fn handle_firehose(socket: WebSocket, state: Arc<AppState>) {
+    let (mut sender, mut receiver) = socket.split();
+    let mut rx = state.firehose.subscribe();
+
+    // Use a channel to signal when receiver closes
+    let (close_tx, mut close_rx) = tokio::sync::oneshot::channel::<()>();
+
+    // Spawn task to handle incoming messages (for cursor requests, etc.)
+    tokio::spawn(async move {
+        while let Some(msg) = receiver.next().await {
+            match msg {
+                Ok(Message::Close(_)) => break,
+                Ok(_) => {} // Ignore other messages
+                Err(_) => break,
+            }
+        }
+        let _ = close_tx.send(());
+    });
+
+    // Send events to the client
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        match event.encode() {
+                            Ok(bytes) => {
+                                if sender.send(Message::Binary(bytes.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(_) => continue,
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        // Client fell behind, continue
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        break;
+                    }
+                }
+            }
+            _ = &mut close_rx => {
+                break;
+            }
+        }
     }
 }
 
@@ -419,6 +727,7 @@ mod tests {
             did: "did:plc:test".to_string(),
             handle: "test.local".to_string(),
             public_key_multibase: "zQ3shtest".to_string(),
+            firehose: Firehose::new(),
         });
 
         let _router = create_router(state);

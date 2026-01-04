@@ -10,6 +10,7 @@ use tower_http::trace::TraceLayer;
 
 use cirrus_pds::lexicon::LexiconStore;
 use cirrus_pds::routes::{AppState, create_router};
+use cirrus_pds::sequencer::Firehose;
 use cirrus_pds::storage::SqliteStorage;
 
 /// Configuration for the PDS server.
@@ -62,6 +63,7 @@ pub async fn run(config: ServerConfig) -> Result<()> {
         did: config.did,
         handle: config.handle,
         public_key_multibase: config.public_key_multibase,
+        firehose: Firehose::new(),
     });
 
     // Create router with middleware

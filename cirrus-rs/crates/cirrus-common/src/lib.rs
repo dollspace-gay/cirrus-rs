@@ -12,6 +12,7 @@
 #![warn(missing_docs)]
 
 pub mod atproto;
+pub mod car;
 pub mod cbor;
 pub mod cid;
 pub mod crypto;
