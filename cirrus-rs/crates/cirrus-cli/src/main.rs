@@ -17,6 +17,15 @@ struct Cli {
 enum Commands {
     /// Initialize a new PDS
     Init,
+    /// Start the PDS server
+    Serve {
+        /// Address to bind to
+        #[arg(long, default_value = "127.0.0.1:2583")]
+        bind: String,
+        /// Path to `SQLite` database
+        #[arg(long, default_value = "pds.db")]
+        db: String,
+    },
     /// Migrate an account from another PDS
     Migrate {
         /// Source PDS URL
@@ -53,6 +62,14 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init => commands::init::run().await,
+        Commands::Serve { bind, db } => {
+            let config = commands::serve::ServerConfig {
+                bind_addr: bind.parse()?,
+                db_path: db,
+                ..Default::default()
+            };
+            commands::serve::run(config).await
+        }
         Commands::Migrate { source } => commands::migrate::run(&source).await,
         Commands::Activate => commands::activate::run().await,
         Commands::Deactivate => commands::deactivate::run().await,

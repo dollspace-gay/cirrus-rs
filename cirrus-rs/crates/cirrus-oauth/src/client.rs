@@ -71,21 +71,23 @@ fn extract_client_metadata(client_id: &str, did_doc: &serde_json::Value) -> Resu
         });
 
     // Extract redirect URIs from service endpoint or alsoKnownAs
-    let redirect_uris = if let Some(svc) = oauth_service {
-        if let Some(endpoint) = svc["serviceEndpoint"].as_str() {
-            vec![endpoint.to_string()]
-        } else if let Some(endpoints) = svc["serviceEndpoint"].as_array() {
-            endpoints
-                .iter()
-                .filter_map(|e| e.as_str().map(String::from))
-                .collect()
-        } else {
-            Vec::new()
-        }
-    } else {
-        // Fallback: use alsoKnownAs handles as redirect URI base
-        Vec::new()
-    };
+    let redirect_uris = oauth_service
+        .map(|svc| {
+            svc["serviceEndpoint"].as_str().map_or_else(
+                || {
+                    svc["serviceEndpoint"]
+                        .as_array()
+                        .map_or_else(Vec::new, |endpoints| {
+                            endpoints
+                                .iter()
+                                .filter_map(|e| e.as_str().map(String::from))
+                                .collect()
+                        })
+                },
+                |endpoint| vec![endpoint.to_string()],
+            )
+        })
+        .unwrap_or_default();
 
     if redirect_uris.is_empty() {
         return Err(OAuthError::InvalidClient(

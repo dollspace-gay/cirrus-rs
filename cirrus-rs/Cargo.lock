@@ -366,6 +366,7 @@ name = "cirrus-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "base64",
  "bcrypt",
  "chrono",
@@ -384,6 +385,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.17",
  "tokio",
+ "tower-http",
  "tracing",
  "tracing-subscriber",
  "url",

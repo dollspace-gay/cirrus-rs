@@ -5,6 +5,7 @@ use console::style;
 use dialoguer::{Input, Confirm};
 
 /// Runs the interactive PDS initialization wizard.
+#[allow(clippy::unused_async)] // Will use async for future network operations
 pub async fn run() -> Result<()> {
     println!("{}", style("Cirrus PDS Setup Wizard").bold().cyan());
     println!();

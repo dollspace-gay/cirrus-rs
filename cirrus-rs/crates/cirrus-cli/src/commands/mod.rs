@@ -5,3 +5,4 @@ pub mod deactivate;
 pub mod init;
 pub mod migrate;
 pub mod secret;
+pub mod serve;

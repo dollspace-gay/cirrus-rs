@@ -4,6 +4,7 @@ use anyhow::Result;
 use console::style;
 
 /// Activates a deactivated account.
+#[allow(clippy::unused_async)] // Will use async when connecting to PDS
 pub async fn run() -> Result<()> {
     println!("{}", style("Activating account...").cyan());
 

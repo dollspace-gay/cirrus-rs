@@ -13,6 +13,15 @@ pub struct AuthContext {
     pub method: AuthMethod,
 }
 
+/// Session tokens returned on login.
+#[derive(Debug, Clone)]
+pub struct SessionTokens {
+    /// Access JWT (short-lived).
+    pub access_jwt: String,
+    /// Refresh JWT (long-lived).
+    pub refresh_jwt: String,
+}
+
 /// Authentication method.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthMethod {
@@ -107,6 +116,56 @@ pub fn verify_password(password: &str, hash: &str) -> Result<()> {
 pub fn hash_password(password: &str) -> Result<String> {
     bcrypt::hash(password, bcrypt::DEFAULT_COST)
         .map_err(|e| PdsError::AuthFailed(format!("bcrypt error: {e}")))
+}
+
+/// Creates a new session (access + refresh tokens).
+///
+/// # Errors
+/// Returns an error if password verification or token creation fails.
+pub fn create_session(
+    _identifier: &str,
+    _password: &str,
+    secret: &[u8],
+) -> Result<SessionTokens> {
+    // In production, would look up user and verify password
+    // For now, just create tokens
+    let did = "did:plc:placeholder";
+
+    let access_jwt = create_access_token(did, secret)?;
+    let refresh_jwt = create_refresh_token(did, secret)?;
+
+    Ok(SessionTokens {
+        access_jwt,
+        refresh_jwt,
+    })
+}
+
+/// Refreshes session tokens.
+///
+/// # Errors
+/// Returns an error if token creation fails.
+pub fn refresh_tokens(did: &str, secret: &[u8]) -> Result<SessionTokens> {
+    let access_jwt = create_access_token(did, secret)?;
+    let refresh_jwt = create_refresh_token(did, secret)?;
+
+    Ok(SessionTokens {
+        access_jwt,
+        refresh_jwt,
+    })
+}
+
+/// Verifies authentication from an Authorization header.
+///
+/// # Errors
+/// Returns an error if authentication fails.
+pub fn verify_auth(auth_header: Option<&str>, secret: &[u8], expected_did: &str) -> Result<AuthContext> {
+    let header = auth_header.ok_or_else(|| PdsError::AuthFailed("missing authorization".into()))?;
+
+    let token = header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| PdsError::AuthFailed("invalid authorization format".into()))?;
+
+    verify_session_jwt(token, secret, expected_did)
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@ use anyhow::Result;
 use console::style;
 
 /// Generates a new signing key pair.
+#[allow(clippy::unnecessary_wraps)]
 pub fn generate_key() -> Result<()> {
     let keypair = cirrus_common::crypto::Keypair::generate();
 
@@ -21,6 +22,7 @@ pub fn generate_key() -> Result<()> {
 }
 
 /// Generates a new JWT secret.
+#[allow(clippy::unnecessary_wraps)]
 pub fn generate_jwt_secret() -> Result<()> {
     use rand::Rng;
     let mut rng = rand::thread_rng();

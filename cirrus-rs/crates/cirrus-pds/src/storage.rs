@@ -1,14 +1,18 @@
 //! `SQLite` storage layer for AT Protocol repositories.
 
+use parking_lot::Mutex;
 use rusqlite::{Connection, params};
 
 use crate::error::Result;
 
 /// Repository storage backed by `SQLite`.
+///
+/// Uses a `Mutex` to ensure thread-safe access to the connection.
 pub struct SqliteStorage {
-    conn: Connection,
+    conn: Mutex<Connection>,
 }
 
+#[allow(clippy::significant_drop_tightening)]
 impl SqliteStorage {
     /// Creates a new in-memory storage instance.
     ///
@@ -16,7 +20,7 @@ impl SqliteStorage {
     /// Returns an error if database initialization fails.
     pub fn in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        let storage = Self { conn };
+        let storage = Self { conn: Mutex::new(conn) };
         storage.init_schema()?;
         Ok(storage)
     }
@@ -27,13 +31,13 @@ impl SqliteStorage {
     /// Returns an error if database initialization fails.
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
-        let storage = Self { conn };
+        let storage = Self { conn: Mutex::new(conn) };
         storage.init_schema()?;
         Ok(storage)
     }
 
     fn init_schema(&self) -> Result<()> {
-        self.conn.execute_batch(
+        self.conn.lock().execute_batch(
             r"
             -- Block storage (MST nodes + record blocks)
             CREATE TABLE IF NOT EXISTS blocks (
@@ -99,8 +103,11 @@ impl SqliteStorage {
     /// # Errors
     /// Returns an error if the query fails.
     pub fn get_block(&self, cid: &str) -> Result<Option<Vec<u8>>> {
-        let mut stmt = self.conn.prepare("SELECT bytes FROM blocks WHERE cid = ?")?;
-        let result = stmt.query_row(params![cid], |row| row.get(0));
+        let result = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare("SELECT bytes FROM blocks WHERE cid = ?")?;
+            stmt.query_row(params![cid], |row| row.get(0))
+        };
 
         match result {
             Ok(bytes) => Ok(Some(bytes)),
@@ -114,7 +121,7 @@ impl SqliteStorage {
     /// # Errors
     /// Returns an error if the insert fails.
     pub fn put_block(&self, cid: &str, bytes: &[u8], rev: Option<&str>) -> Result<()> {
-        self.conn.execute(
+        self.conn.lock().execute(
             "INSERT OR REPLACE INTO blocks (cid, bytes, rev) VALUES (?, ?, ?)",
             params![cid, bytes, rev],
         )?;
@@ -126,9 +133,9 @@ impl SqliteStorage {
     /// # Errors
     /// Returns an error if the query fails.
     pub fn has_block(&self, cid: &str) -> Result<bool> {
-        let mut stmt = self.conn.prepare("SELECT 1 FROM blocks WHERE cid = ?")?;
-        let exists = stmt.exists(params![cid])?;
-        Ok(exists)
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT 1 FROM blocks WHERE cid = ?")?;
+        Ok(stmt.exists(params![cid])?)
     }
 
     /// Gets the current repo state.
@@ -136,20 +143,19 @@ impl SqliteStorage {
     /// # Errors
     /// Returns an error if the query fails.
     pub fn get_repo_state(&self) -> Result<RepoState> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
             "SELECT root_cid, rev, seq, active FROM repo_state WHERE id = 1"
         )?;
 
-        let state = stmt.query_row([], |row| {
+        Ok(stmt.query_row([], |row| {
             Ok(RepoState {
                 root_cid: row.get(0)?,
                 rev: row.get(1)?,
                 seq: row.get(2)?,
                 active: row.get(3)?,
             })
-        })?;
-
-        Ok(state)
+        })?)
     }
 
     /// Updates the repo state.
@@ -157,12 +163,13 @@ impl SqliteStorage {
     /// # Errors
     /// Returns an error if the update fails.
     pub fn update_repo_state(&self, root_cid: &str, rev: &str) -> Result<i64> {
-        self.conn.execute(
+        let conn = self.conn.lock();
+        conn.execute(
             "UPDATE repo_state SET root_cid = ?, rev = ?, seq = seq + 1 WHERE id = 1",
             params![root_cid, rev],
         )?;
 
-        let seq = self.conn.query_row(
+        let seq = conn.query_row(
             "SELECT seq FROM repo_state WHERE id = 1",
             [],
             |row| row.get(0),
@@ -176,7 +183,8 @@ impl SqliteStorage {
     /// # Errors
     /// Returns an error if the query fails.
     pub fn is_active(&self) -> Result<bool> {
-        let active: i32 = self.conn.query_row(
+        let conn = self.conn.lock();
+        let active: i32 = conn.query_row(
             "SELECT active FROM repo_state WHERE id = 1",
             [],
             |row| row.get(0),
@@ -189,7 +197,8 @@ impl SqliteStorage {
     /// # Errors
     /// Returns an error if the update fails.
     pub fn set_active(&self, active: bool) -> Result<()> {
-        self.conn.execute(
+        let conn = self.conn.lock();
+        conn.execute(
             "UPDATE repo_state SET active = ? WHERE id = 1",
             params![i32::from(active)],
         )?;

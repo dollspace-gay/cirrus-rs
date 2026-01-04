@@ -48,6 +48,10 @@ pub enum PdsError {
     #[error("validation error: {0}")]
     Validation(String),
 
+    /// Lexicon error.
+    #[error("lexicon error: {0}")]
+    Lexicon(String),
+
     /// Rate limit exceeded.
     #[error("rate limit exceeded")]
     RateLimited,

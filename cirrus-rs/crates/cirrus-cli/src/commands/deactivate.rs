@@ -5,6 +5,7 @@ use console::style;
 use dialoguer::Confirm;
 
 /// Deactivates the account.
+#[allow(clippy::unused_async)] // Will use async when connecting to PDS
 pub async fn run() -> Result<()> {
     println!("{}", style("Account Deactivation").bold().yellow());
     println!();

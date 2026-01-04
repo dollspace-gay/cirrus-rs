@@ -52,15 +52,27 @@ impl BlobRef {
 /// Blob storage trait.
 pub trait BlobStore: Send + Sync {
     /// Stores a blob and returns its CID.
+    ///
+    /// # Errors
+    /// Returns an error if storage fails.
     fn put_blob(&self, data: &[u8], mime_type: &str) -> Result<BlobRef>;
 
     /// Retrieves a blob by CID.
+    ///
+    /// # Errors
+    /// Returns an error if retrieval fails.
     fn get_blob(&self, cid: &str) -> Result<Option<Vec<u8>>>;
 
     /// Checks if a blob exists.
+    ///
+    /// # Errors
+    /// Returns an error if the check fails.
     fn has_blob(&self, cid: &str) -> Result<bool>;
 
     /// Deletes a blob.
+    ///
+    /// # Errors
+    /// Returns an error if deletion fails.
     fn delete_blob(&self, cid: &str) -> Result<()>;
 }
 
