@@ -14,11 +14,13 @@ use serde::Deserialize;
 
 use crate::error::PdsError;
 use crate::lexicon::LexiconStore;
+use crate::middleware::{RequireAdmin, RequireAuth};
 use crate::repo::{generate_rkey, make_at_uri};
 use crate::storage::SqliteStorage;
 use crate::xrpc::{
-    CreateRecordInput, CreateRecordOutput, CreateSessionInput, DescribeRepoOutput,
-    GetRecordOutput, ListRecordsOutput, SessionOutput, XrpcError,
+    CheckAccountStatusOutput, CreateRecordInput, CreateRecordOutput, CreateSessionInput,
+    DeactivateAccountInput, DescribeRepoOutput, GetRecordOutput, ListRecordsOutput,
+    SessionOutput, XrpcError,
 };
 
 /// Application state shared across handlers.
@@ -49,6 +51,9 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/xrpc/com.atproto.server.refreshSession", post(refresh_session))
         .route("/xrpc/com.atproto.server.getSession", get(get_session))
         .route("/xrpc/com.atproto.server.deleteSession", post(delete_session))
+        .route("/xrpc/com.atproto.server.activateAccount", post(activate_account))
+        .route("/xrpc/com.atproto.server.deactivateAccount", post(deactivate_account))
+        .route("/xrpc/com.atproto.server.checkAccountStatus", get(check_account_status))
         // Repo endpoints
         .route("/xrpc/com.atproto.repo.describeRepo", get(describe_repo))
         .route("/xrpc/com.atproto.repo.getRecord", get(get_record))
@@ -146,13 +151,15 @@ async fn create_session(
 
 async fn refresh_session(
     State(state): State<Arc<AppState>>,
+    RequireAuth(auth): RequireAuth,
 ) -> Response {
-    match crate::auth::refresh_tokens(&state.did, &state.jwt_secret) {
+    // Use the DID from the refresh token
+    match crate::auth::refresh_tokens(&auth.did, &state.jwt_secret) {
         Ok(tokens) => Json(SessionOutput {
             access_jwt: tokens.access_jwt,
             refresh_jwt: tokens.refresh_jwt,
             handle: state.handle.clone(),
-            did: state.did.clone(),
+            did: auth.did,
         }).into_response(),
         Err(e) => e.into_response(),
     }
@@ -160,16 +167,58 @@ async fn refresh_session(
 
 async fn get_session(
     State(state): State<Arc<AppState>>,
+    RequireAuth(auth): RequireAuth,
 ) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "handle": state.handle,
-        "did": state.did,
+        "did": auth.did,
         "active": true
     }))
 }
 
-async fn delete_session() -> StatusCode {
+async fn delete_session(
+    RequireAuth(_auth): RequireAuth,
+) -> StatusCode {
+    // In a full implementation, would invalidate the session
     StatusCode::OK
+}
+
+async fn activate_account(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_auth): RequireAdmin,
+) -> Response {
+    if let Err(e) = state.storage.set_active(true) {
+        return e.into_response();
+    }
+    StatusCode::OK.into_response()
+}
+
+async fn deactivate_account(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_auth): RequireAdmin,
+    Json(_input): Json<DeactivateAccountInput>,
+) -> Response {
+    if let Err(e) = state.storage.set_active(false) {
+        return e.into_response();
+    }
+    StatusCode::OK.into_response()
+}
+
+async fn check_account_status(
+    State(state): State<Arc<AppState>>,
+    RequireAuth(_auth): RequireAuth,
+) -> Response {
+    let repo_state = match state.storage.get_repo_state() {
+        Ok(s) => s,
+        Err(e) => return e.into_response(),
+    };
+
+    Json(CheckAccountStatusOutput {
+        activated: repo_state.active,
+        valid_did: !state.did.is_empty(),
+        repo_commit: repo_state.root_cid,
+        repo_rev: repo_state.rev,
+    }).into_response()
 }
 
 async fn describe_repo(
@@ -242,9 +291,11 @@ async fn list_records(
 
 async fn create_record(
     State(state): State<Arc<AppState>>,
+    RequireAdmin(auth): RequireAdmin,
     Json(input): Json<CreateRecordInput>,
 ) -> Response {
-    if input.repo != state.did {
+    // RequireAdmin already verified the user is the PDS owner
+    if input.repo != auth.did {
         return PdsError::NotAuthorized("repo mismatch".into()).into_response();
     }
 
@@ -280,16 +331,18 @@ async fn create_record(
         return e.into_response();
     }
 
-    let uri = make_at_uri(&state.did, &input.collection, &rkey);
+    let uri = make_at_uri(&auth.did, &input.collection, &rkey);
 
     Json(CreateRecordOutput { uri, cid }).into_response()
 }
 
 async fn delete_record(
     State(state): State<Arc<AppState>>,
+    RequireAdmin(auth): RequireAdmin,
     Json(input): Json<crate::xrpc::DeleteRecordInput>,
 ) -> Response {
-    if input.repo != state.did {
+    // RequireAdmin already verified the user is the PDS owner
+    if input.repo != auth.did {
         return PdsError::NotAuthorized("repo mismatch".into()).into_response();
     }
 

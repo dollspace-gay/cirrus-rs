@@ -16,6 +16,7 @@ pub mod blobs;
 pub mod did;
 pub mod error;
 pub mod lexicon;
+pub mod middleware;
 pub mod repo;
 pub mod routes;
 pub mod sequencer;

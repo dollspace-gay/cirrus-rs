@@ -165,6 +165,30 @@ pub struct UploadBlobOutput {
     pub blob: crate::blobs::BlobRef,
 }
 
+/// Check account status output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckAccountStatusOutput {
+    /// Whether the account is activated.
+    pub activated: bool,
+    /// Whether the account is valid (DID exists, etc).
+    #[serde(rename = "validDid")]
+    pub valid_did: bool,
+    /// The repo commit revision.
+    #[serde(rename = "repoCommit", skip_serializing_if = "Option::is_none")]
+    pub repo_commit: Option<String>,
+    /// The repo root CID.
+    #[serde(rename = "repoRev", skip_serializing_if = "Option::is_none")]
+    pub repo_rev: Option<String>,
+}
+
+/// Deactivate account input.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DeactivateAccountInput {
+    /// Delete the account after deactivation.
+    #[serde(rename = "deleteAfter", skip_serializing_if = "Option::is_none")]
+    pub delete_after: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
