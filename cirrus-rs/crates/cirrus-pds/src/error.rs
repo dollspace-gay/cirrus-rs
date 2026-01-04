@@ -40,6 +40,10 @@ pub enum PdsError {
     #[error("DID resolution failed: {0}")]
     DidResolution(String),
 
+    /// Handle resolution failed.
+    #[error("handle resolution failed: {0}")]
+    HandleResolution(String),
+
     /// Blob storage error.
     #[error("blob error: {0}")]
     Blob(String),

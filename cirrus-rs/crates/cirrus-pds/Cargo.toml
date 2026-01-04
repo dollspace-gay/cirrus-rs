@@ -54,6 +54,9 @@ anyhow.workspace = true
 # HTTP client
 reqwest.workspace = true
 
+# DNS resolution
+trust-dns-resolver.workspace = true
+
 # Utilities
 url.workspace = true
 uuid.workspace = true
