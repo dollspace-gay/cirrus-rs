@@ -1,8 +1,13 @@
 //! Blob storage interface.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
+use crate::error::{PdsError, Result};
+
+/// Maximum blob size (5 MB).
+pub const MAX_BLOB_SIZE: usize = 5 * 1024 * 1024;
 
 /// A blob reference.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +81,77 @@ pub trait BlobStore: Send + Sync {
     fn delete_blob(&self, cid: &str) -> Result<()>;
 }
 
+/// Disk-backed blob store for production use.
+///
+/// Stores blobs at `{base_dir}/{cid_prefix}/{cid}` where
+/// `cid_prefix` is the first 2 characters of the CID string,
+/// providing directory sharding.
+pub struct DiskBlobStore {
+    base_dir: PathBuf,
+}
+
+impl DiskBlobStore {
+    /// Creates a new disk blob store at the given directory.
+    ///
+    /// # Errors
+    /// Returns an error if the directory cannot be created.
+    pub fn new(base_dir: impl Into<PathBuf>) -> Result<Self> {
+        let base_dir = base_dir.into();
+        std::fs::create_dir_all(&base_dir)?;
+        Ok(Self { base_dir })
+    }
+
+    fn blob_path(&self, cid: &str) -> PathBuf {
+        let prefix = &cid[..cid.len().min(2)];
+        self.base_dir.join(prefix).join(cid)
+    }
+}
+
+impl BlobStore for DiskBlobStore {
+    fn put_blob(&self, data: &[u8], mime_type: &str) -> Result<BlobRef> {
+        if data.len() > MAX_BLOB_SIZE {
+            return Err(PdsError::Blob(format!(
+                "blob too large: {} bytes (max: {MAX_BLOB_SIZE})",
+                data.len()
+            )));
+        }
+
+        let cid = cirrus_common::cid::Cid::for_raw(data);
+        let cid_str = cid.to_string();
+        let path = self.blob_path(&cid_str);
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        std::fs::write(&path, data)?;
+
+        Ok(BlobRef::new(&cid_str, mime_type, data.len() as u64))
+    }
+
+    fn get_blob(&self, cid: &str) -> Result<Option<Vec<u8>>> {
+        let path = self.blob_path(cid);
+        match std::fs::read(&path) {
+            Ok(data) => Ok(Some(data)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn has_blob(&self, cid: &str) -> Result<bool> {
+        Ok(self.blob_path(cid).exists())
+    }
+
+    fn delete_blob(&self, cid: &str) -> Result<()> {
+        let path = self.blob_path(cid);
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
 /// In-memory blob store for testing.
 #[derive(Default)]
 pub struct MemoryBlobStore {
@@ -126,6 +202,57 @@ mod tests {
         assert_eq!(blob_ref.cid(), "bafytest");
         assert_eq!(blob_ref.mime_type, "image/png");
         assert_eq!(blob_ref.size, 1024);
+    }
+
+    #[test]
+    fn test_disk_blob_store_roundtrip() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = DiskBlobStore::new(dir.path().join("blobs")).unwrap();
+        let data = b"test blob data for disk store";
+
+        let blob_ref = store.put_blob(data, "text/plain").unwrap();
+        let retrieved = store.get_blob(blob_ref.cid()).unwrap();
+        assert_eq!(retrieved, Some(data.to_vec()));
+    }
+
+    #[test]
+    fn test_disk_blob_store_has_and_delete() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = DiskBlobStore::new(dir.path().join("blobs")).unwrap();
+        let data = b"delete me";
+
+        let blob_ref = store.put_blob(data, "application/octet-stream").unwrap();
+        assert!(store.has_blob(blob_ref.cid()).unwrap());
+
+        store.delete_blob(blob_ref.cid()).unwrap();
+        assert!(!store.has_blob(blob_ref.cid()).unwrap());
+    }
+
+    #[test]
+    fn test_disk_blob_store_get_nonexistent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = DiskBlobStore::new(dir.path().join("blobs")).unwrap();
+
+        assert_eq!(store.get_blob("bafynonexistent").unwrap(), None);
+    }
+
+    #[test]
+    fn test_disk_blob_store_delete_nonexistent() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = DiskBlobStore::new(dir.path().join("blobs")).unwrap();
+
+        // Should not error on deleting nonexistent blob
+        store.delete_blob("bafynonexistent").unwrap();
+    }
+
+    #[test]
+    fn test_disk_blob_store_max_size() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = DiskBlobStore::new(dir.path().join("blobs")).unwrap();
+        let oversized = vec![0u8; MAX_BLOB_SIZE + 1];
+
+        let result = store.put_blob(&oversized, "application/octet-stream");
+        assert!(result.is_err());
     }
 
     #[test]

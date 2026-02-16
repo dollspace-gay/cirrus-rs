@@ -119,6 +119,32 @@ impl OAuthSqliteStorage {
             .map(|d| d.as_secs())
             .unwrap_or(0)
     }
+
+    /// Synchronous token lookup by access token.
+    ///
+    /// This is used by the auth middleware which runs in a synchronous
+    /// context. The underlying storage uses `parking_lot::Mutex` so
+    /// this is safe to call from async code.
+    pub fn get_token_sync(&self, access_token: &str) -> Option<TokenData> {
+        self.conn.lock().query_row(
+            "SELECT access_token, refresh_token, client_id, sub, scope, dpop_jkt, issued_at, expires_at, revoked
+             FROM oauth_tokens WHERE access_token = ?",
+            params![access_token],
+            |row| {
+                Ok(TokenData {
+                    access_token: row.get(0)?,
+                    refresh_token: row.get(1)?,
+                    client_id: row.get(2)?,
+                    sub: row.get(3)?,
+                    scope: row.get(4)?,
+                    dpop_jkt: row.get(5)?,
+                    issued_at: row.get::<_, i64>(6)? as u64,
+                    expires_at: row.get::<_, i64>(7)? as u64,
+                    revoked: row.get::<_, i32>(8)? != 0,
+                })
+            },
+        ).ok()
+    }
 }
 
 #[async_trait]
@@ -657,5 +683,36 @@ mod tests {
         // Valid code should still exist
         let code = storage.consume_auth_code("valid_code").await.unwrap();
         assert!(code.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_get_token_sync() {
+        let storage = OAuthSqliteStorage::in_memory().unwrap();
+
+        let token_data = TokenData {
+            access_token: "sync_access_123".to_string(),
+            refresh_token: "sync_refresh_456".to_string(),
+            client_id: "client_abc".to_string(),
+            sub: "did:plc:user123".to_string(),
+            scope: "atproto".to_string(),
+            dpop_jkt: Some("thumbprint_xyz".to_string()),
+            issued_at: OAuthSqliteStorage::current_timestamp(),
+            expires_at: OAuthSqliteStorage::current_timestamp() + 3600,
+            revoked: false,
+        };
+
+        // Save via async method
+        storage.save_token(token_data).await.unwrap();
+
+        // Retrieve via sync method
+        let retrieved = storage.get_token_sync("sync_access_123");
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.sub, "did:plc:user123");
+        assert_eq!(retrieved.dpop_jkt, Some("thumbprint_xyz".to_string()));
+
+        // Non-existent token
+        let missing = storage.get_token_sync("nonexistent");
+        assert!(missing.is_none());
     }
 }

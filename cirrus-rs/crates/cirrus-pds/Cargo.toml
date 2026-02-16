@@ -47,6 +47,9 @@ jsonwebtoken.workspace = true
 # Password hashing
 bcrypt.workspace = true
 
+# Rate limiting
+governor.workspace = true
+
 # Error handling
 thiserror.workspace = true
 anyhow.workspace = true

@@ -70,6 +70,9 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 # DNS resolution
 trust-dns-resolver = { version = "0.23", features = ["tokio-runtime"] }
 
+# Rate limiting
+governor = "0.10"
+
 # Utilities
 url = "2.5"
 uuid = { version = "1.16", features = ["v4"] }

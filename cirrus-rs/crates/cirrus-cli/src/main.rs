@@ -25,12 +25,39 @@ enum Commands {
         /// Path to `SQLite` database
         #[arg(long, default_value = "pds.db")]
         db: String,
+        /// JWT secret for session tokens
+        #[arg(long, env = "PDS_JWT_SECRET", default_value = "")]
+        jwt_secret: String,
+        /// Bcrypt-hashed password for the account
+        #[arg(long, env = "PDS_PASSWORD_HASH", default_value = "")]
+        password_hash: String,
+        /// DID of the account
+        #[arg(long, env = "PDS_DID", default_value = "")]
+        did: String,
+        /// Handle of the account
+        #[arg(long, env = "PDS_HANDLE", default_value = "")]
+        handle: String,
+        /// Hostname for this PDS
+        #[arg(long, env = "PDS_HOSTNAME", default_value = "localhost:2583")]
+        hostname: String,
+        /// Public key in multibase format
+        #[arg(long, env = "PDS_PUBLIC_KEY", default_value = "")]
+        public_key: String,
+        /// Signing key in hex format (for commit signatures)
+        #[arg(long, env = "PDS_SIGNING_KEY", default_value = "")]
+        signing_key: String,
     },
     /// Migrate an account from another PDS
     Migrate {
         /// Source PDS URL
         #[arg(long)]
         source: String,
+        /// Path to local `SQLite` database
+        #[arg(long, default_value = "pds.db")]
+        db: String,
+        /// DID of the account to migrate
+        #[arg(long)]
+        did: String,
     },
     /// Activate a deactivated account
     Activate,
@@ -62,15 +89,21 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init => commands::init::run().await,
-        Commands::Serve { bind, db } => {
+        Commands::Serve { bind, db, jwt_secret, password_hash, did, handle, hostname, public_key, signing_key } => {
             let config = commands::serve::ServerConfig {
                 bind_addr: bind.parse()?,
                 db_path: db,
-                ..Default::default()
+                jwt_secret,
+                password_hash,
+                did,
+                handle,
+                hostname,
+                public_key_multibase: public_key,
+                signing_key_hex: signing_key,
             };
             commands::serve::run(config).await
         }
-        Commands::Migrate { source } => commands::migrate::run(&source).await,
+        Commands::Migrate { source, db, did } => commands::migrate::run(&source, &db, &did).await,
         Commands::Activate => commands::activate::run().await,
         Commands::Deactivate => commands::deactivate::run().await,
         Commands::Secret(secret_cmd) => match secret_cmd {

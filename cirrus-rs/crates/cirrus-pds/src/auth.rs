@@ -118,21 +118,39 @@ pub fn hash_password(password: &str) -> Result<String> {
         .map_err(|e| PdsError::AuthFailed(format!("bcrypt error: {e}")))
 }
 
+/// Configuration for session authentication on a single-user PDS.
+pub struct SessionConfig<'a> {
+    /// DID of the account owner.
+    pub did: &'a str,
+    /// Handle of the account owner.
+    pub handle: &'a str,
+    /// Bcrypt password hash.
+    pub password_hash: &'a str,
+    /// JWT signing secret.
+    pub jwt_secret: &'a [u8],
+}
+
 /// Creates a new session (access + refresh tokens).
 ///
+/// Verifies the identifier matches the configured DID or handle,
+/// then verifies the password against the stored bcrypt hash.
+///
 /// # Errors
-/// Returns an error if password verification or token creation fails.
+/// Returns an error if the identifier is unknown, password is wrong,
+/// or token creation fails.
 pub fn create_session(
-    _identifier: &str,
-    _password: &str,
-    secret: &[u8],
+    identifier: &str,
+    password: &str,
+    config: &SessionConfig<'_>,
 ) -> Result<SessionTokens> {
-    // In production, would look up user and verify password
-    // For now, just create tokens
-    let did = "did:plc:placeholder";
+    if identifier != config.did && identifier != config.handle {
+        return Err(PdsError::AuthFailed("identifier not found".into()));
+    }
 
-    let access_jwt = create_access_token(did, secret)?;
-    let refresh_jwt = create_refresh_token(did, secret)?;
+    verify_password(password, config.password_hash)?;
+
+    let access_jwt = create_access_token(config.did, config.jwt_secret)?;
+    let refresh_jwt = create_refresh_token(config.did, config.jwt_secret)?;
 
     Ok(SessionTokens {
         access_jwt,
@@ -197,5 +215,75 @@ mod tests {
         let hash = hash_password(password).unwrap();
         assert!(verify_password(password, &hash).is_ok());
         assert!(verify_password("wrong-password", &hash).is_err());
+    }
+
+    #[test]
+    fn test_create_session_valid_handle() {
+        let secret = b"test-secret-key-for-jwt-signing";
+        let password = "test-password";
+        let hash = hash_password(password).unwrap();
+
+        let config = SessionConfig {
+            did: "did:plc:testuser",
+            handle: "test.bsky.social",
+            password_hash: &hash,
+            jwt_secret: secret,
+        };
+
+        let result = create_session("test.bsky.social", password, &config);
+        assert!(result.is_ok());
+        let tokens = result.unwrap();
+        assert!(!tokens.access_jwt.is_empty());
+        assert!(!tokens.refresh_jwt.is_empty());
+    }
+
+    #[test]
+    fn test_create_session_valid_did() {
+        let secret = b"test-secret-key-for-jwt-signing";
+        let password = "test-password";
+        let hash = hash_password(password).unwrap();
+
+        let config = SessionConfig {
+            did: "did:plc:testuser",
+            handle: "test.bsky.social",
+            password_hash: &hash,
+            jwt_secret: secret,
+        };
+
+        let result = create_session("did:plc:testuser", password, &config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_create_session_wrong_identifier() {
+        let secret = b"test-secret-key-for-jwt-signing";
+        let password = "test-password";
+        let hash = hash_password(password).unwrap();
+
+        let config = SessionConfig {
+            did: "did:plc:testuser",
+            handle: "test.bsky.social",
+            password_hash: &hash,
+            jwt_secret: secret,
+        };
+
+        let result = create_session("unknown.handle", password, &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_session_wrong_password() {
+        let secret = b"test-secret-key-for-jwt-signing";
+        let hash = hash_password("correct-password").unwrap();
+
+        let config = SessionConfig {
+            did: "did:plc:testuser",
+            handle: "test.bsky.social",
+            password_hash: &hash,
+            jwt_secret: secret,
+        };
+
+        let result = create_session("test.bsky.social", "wrong-password", &config);
+        assert!(result.is_err());
     }
 }

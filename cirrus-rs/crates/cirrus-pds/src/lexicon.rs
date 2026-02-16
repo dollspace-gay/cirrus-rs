@@ -553,9 +553,11 @@ impl LexiconStore {
         collection: &str,
         value: &serde_json::Value,
     ) -> Result<()> {
-        let def = self.get_main(collection).ok_or_else(|| {
-            PdsError::Lexicon(format!("unknown collection: {collection}"))
-        })?;
+        // Permissive: skip validation for unknown collections (fail-open)
+        let def = match self.get_main(collection) {
+            Some(d) => d,
+            None => return Ok(()),
+        };
 
         match def {
             LexiconDef::Record(record) => self.validate_object(value, &record.record),

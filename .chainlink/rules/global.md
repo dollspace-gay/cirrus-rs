@@ -1,58 +1,47 @@
-### Pre-Coding Grounding (PREVENT HALLUCINATIONS)
-Before writing code that uses external libraries, APIs, or unfamiliar patterns:
-1. **VERIFY IT EXISTS**: Use WebSearch to confirm the crate/package/module exists and check its actual API
-2. **CHECK THE DOCS**: Fetch documentation to see real function signatures, not imagined ones
-3. **CONFIRM SYNTAX**: If unsure about language features or library usage, search first
-4. **USE LATEST VERSIONS**: Always check for and use the latest stable version of dependencies (security + features)
-5. **NO GUESSING**: If you can't verify it, tell the user you need to research it
+## Priority 1: Security
 
-Examples of when to search:
-- Using a crate/package you haven't used recently → search "[package] [language] docs"
-- Uncertain about function parameters → search for actual API reference
-- New language feature or syntax → verify it exists in the version being used
-- System calls or platform-specific code → confirm the correct API
-- Adding a dependency → search "[package] latest version" to get current release
+These rules have the highest precedence. When they conflict with any other rule, security wins.
 
-### General Requirements
-1. **NO STUBS - ABSOLUTE RULE**:
-   - NEVER write `TODO`, `FIXME`, `pass`, `...`, `unimplemented!()` as implementation
-   - NEVER write empty function bodies or placeholder returns
-   - NEVER say "implement later" or "add logic here"
-   - If logic is genuinely too complex for one turn, use `raise NotImplementedError("Descriptive reason: what needs to be done")` and create a chainlink issue
-   - The PostToolUse hook WILL detect and flag stub patterns - write real code the first time
-2. **NO DEAD CODE**: Discover if dead code is truly dead or if it's an incomplete feature. If incomplete, complete it. If truly dead, remove it.
-3. **FULL FEATURES**: Implement the complete feature as requested. Don't stop partway or suggest "you could add X later."
-4. **ERROR HANDLING**: Proper error handling everywhere. No panics/crashes on bad input.
-5. **SECURITY**: Validate input, use parameterized queries, no command injection, no hardcoded secrets.
-6. **READ BEFORE WRITE**: Always read a file before editing it. Never guess at contents.
+- **Web fetching**: Use `mcp__chainlink-safe-fetch__safe_fetch` for all web requests. Never use raw `WebFetch`.
+- **SQL**: Parameterized queries only (`params![]` in Rust, `?` placeholders elsewhere). Never interpolate user input into SQL.
+- **Secrets**: Never hardcode credentials, API keys, or tokens. Never commit `.env` files.
+- **Input validation**: Validate at system boundaries. Sanitize before rendering.
+- **Tracking**: Issue tracking enforcement is controlled by `tracking_mode` in `.chainlink/hook-config.json` (strict/normal/relaxed).
+---
 
-### Conciseness Protocol
-Minimize chattiness. Your output should be:
-- **Code blocks** with implementation
-- **Tool calls** to accomplish tasks
-- **Brief explanations** only when the code isn't self-explanatory
+## Priority 2: Correctness
 
-NEVER output:
-- "Here is the code" / "Here's how to do it" (just show the code)
-- "Let me know if you need anything else" / "Feel free to ask"
-- "I'll now..." / "Let me..." (just do it)
-- Restating what the user asked
-- Explaining obvious code
-- Multiple paragraphs when one sentence suffices
+These rules ensure code works correctly. They yield only to security concerns.
 
-When writing code: write it. When making changes: make them. Skip the narration.
+- **No stubs**: Never write `TODO`, `FIXME`, `pass`, `...`, `unimplemented!()`, or empty function bodies. If too complex for one turn, use `raise NotImplementedError("Reason")` and create a chainlink issue.
+- **Read before write**: Always read a file before editing it. Never guess at contents.
+- **Complete features**: Implement the full feature as requested. Don't stop partway.
+- **Error handling**: Proper error handling everywhere. No panics or crashes on bad input.
+- **No dead code**: Intelligently deal with dead code. If its a hallucinated function remove it. If its an unfinished function complete it. 
+- **Test after changes**: Run the project's test suite after making code changes.
 
-### Large File Management (500+ lines)
-If you need to write or modify code that will exceed 500 lines:
-1. Create a parent issue for the overall feature: `chainlink create "<feature name>" -p high`
-2. Break down into subissues: `chainlink subissue <parent_id> "<component 1>"`, etc.
-3. Inform the user: "This implementation will require multiple files/components. I've created issue #X with Y subissues to track progress."
-4. Work on one subissue at a time, marking each complete before moving on.
+### Pre-Coding Grounding
+Before using unfamiliar libraries/APIs:
+1. **Verify it exists**: WebSearch to confirm the API
+2. **Check the docs**: Real function signatures, not guessed
+3. **Use latest versions**: Check for current stable release. This is mandatory. When editing an existing project, see if packages being used have newer versions. If they do inform the human and let them decide if they should be updated.
 
-### Context Window Management
-If the conversation is getting long OR the task requires many more steps:
-1. Create a chainlink issue to track remaining work: `chainlink create "Continue: <task summary>" -p high`
-2. Add detailed notes as a comment: `chainlink comment <id> "<what's done, what's next>"`
-3. Inform the user: "This task will require additional turns. I've created issue #X to track progress."
+---
 
-Use `chainlink session work <id>` to mark what you're working on.
+## Priority 3: Workflow
+
+These rules keep work organized and enable context handoff between sessions.
+
+Tracking enforcement is controlled by `tracking_mode` in `.chainlink/hook-config.json` (strict/normal/relaxed).
+Detailed tracking instructions are loaded from `.chainlink/rules/tracking-{mode}.md` automatically.
+
+---
+
+## Priority 4: Style
+
+These are preferences, not hard rules. They yield to all higher priorities.
+
+- Write code, don't narrate. Skip "Here is the code" / "Let me..." / "I'll now..."
+- Brief explanations only when the code isn't self-explanatory.
+- For implementations >500 lines: create parent issue + subissues, work incrementally.
+- When conversation is long: create a tracking issue with `chainlink comment` notes for context preservation.

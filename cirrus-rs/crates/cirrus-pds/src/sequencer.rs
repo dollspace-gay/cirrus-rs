@@ -21,19 +21,60 @@ pub enum FirehoseEvent {
 impl FirehoseEvent {
     /// Encodes the event as a framed message (type header + DAG-CBOR body).
     ///
+    /// Uses `ciborium::Value` directly to ensure CID fields use CBOR tag 42
+    /// links as required by the AT Protocol firehose format.
+    ///
     /// # Errors
     /// Returns an error if encoding fails.
+    #[allow(clippy::unwrap_used)]
     pub fn encode(&self) -> Result<Vec<u8>> {
+        use ciborium::Value as V;
+        use cirrus_common::error::Error;
+
         match self {
             Self::Commit(event) => {
-                // Frame format: header (CBOR map with op + t) + body (CBOR event)
-                let header = serde_json::json!({
-                    "op": 1,  // 1 = message
-                    "t": "#commit"
-                });
+                // Header: {"op": 1, "t": "#commit"} — keys sorted by encoded length
+                let header = V::Map(vec![
+                    (V::Text("op".to_string()), V::Integer(1.into())),
+                    (V::Text("t".to_string()), V::Text("#commit".to_string())),
+                ]);
 
-                let header_bytes = cirrus_common::cbor::encode(&header)?;
-                let body_bytes = cirrus_common::cbor::encode(event)?;
+                // Build body with proper CID links
+                let commit_cid = str_to_cid_link(&event.commit);
+                let ops: Vec<V> = event.ops.iter().map(|op| {
+                    let fields = vec![
+                        (V::Text("action".to_string()), V::Text(op.action.clone())),
+                        (V::Text("cid".to_string()), match &op.cid {
+                            Some(c) => str_to_cid_link(c),
+                            None => V::Null,
+                        }),
+                        (V::Text("path".to_string()), V::Text(op.path.clone())),
+                    ];
+                    V::Map(fields)
+                }).collect();
+
+                let body = V::Map(vec![
+                    (V::Text("blocks".to_string()), V::Bytes(event.blocks.clone())),
+                    (V::Text("commit".to_string()), commit_cid),
+                    (V::Text("ops".to_string()), V::Array(ops)),
+                    (V::Text("rebase".to_string()), V::Bool(event.rebase)),
+                    (V::Text("repo".to_string()), V::Text(event.repo.clone())),
+                    (V::Text("rev".to_string()), V::Text(event.rev.clone())),
+                    (V::Text("seq".to_string()), V::Integer(event.seq.into())),
+                    (V::Text("since".to_string()), match &event.since {
+                        Some(s) => V::Text(s.clone()),
+                        None => V::Null,
+                    }),
+                    (V::Text("time".to_string()), V::Text(event.time.clone())),
+                    (V::Text("tooBig".to_string()), V::Bool(event.too_big)),
+                ]);
+
+                let mut header_bytes = Vec::new();
+                ciborium::into_writer(&header, &mut header_bytes)
+                    .map_err(|e| Error::CborEncode(e.to_string()))?;
+                let mut body_bytes = Vec::new();
+                ciborium::into_writer(&body, &mut body_bytes)
+                    .map_err(|e| Error::CborEncode(e.to_string()))?;
 
                 let mut frame = Vec::with_capacity(header_bytes.len() + body_bytes.len());
                 frame.extend_from_slice(&header_bytes);
@@ -41,6 +82,19 @@ impl FirehoseEvent {
                 Ok(frame)
             }
         }
+    }
+}
+
+/// Converts a CID string to a CBOR tag 42 link value.
+fn str_to_cid_link(cid_str: &str) -> ciborium::Value {
+    use ciborium::Value as V;
+    match cirrus_common::cid::Cid::from_string(cid_str) {
+        Ok(cid) => {
+            let mut bytes = vec![0x00]; // identity multibase prefix
+            bytes.extend_from_slice(&cid.to_bytes());
+            V::Tag(42, Box::new(V::Bytes(bytes)))
+        }
+        Err(_) => V::Text(cid_str.to_string()), // fallback to string
     }
 }
 

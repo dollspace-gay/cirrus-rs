@@ -105,6 +105,13 @@ impl HandleResolver {
         // Normalize handle
         let handle = handle.to_lowercase().trim().to_string();
 
+        // Validate handle format to prevent SSRF
+        if !is_safe_handle(&handle) {
+            return Err(PdsError::HandleResolution(format!(
+                "invalid handle format: '{handle}'"
+            )));
+        }
+
         // Check cache first
         if let Some(did) = self.get_cached(&handle) {
             return Ok(HandleResolution {
@@ -267,6 +274,69 @@ impl HandleResolver {
     }
 }
 
+/// Validates a handle is safe for DNS/HTTP resolution (SSRF prevention).
+///
+/// Rejects handles that could resolve to internal/private IPs:
+/// - IP addresses (v4 and v6)
+/// - Hex-encoded IPs (0x7f000001)
+/// - localhost, internal, local TLDs
+/// - Handles shorter than 4 chars or without a dot
+fn is_safe_handle(handle: &str) -> bool {
+    // Must be reasonable length (at least "a.b" pattern)
+    if handle.len() < 4 || handle.len() > 253 {
+        return false;
+    }
+
+    // Must contain at least one dot (domain-like)
+    if !handle.contains('.') {
+        return false;
+    }
+
+    // Must only contain valid hostname chars
+    if !handle
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b".-".contains(&b))
+    {
+        return false;
+    }
+
+    // Block IP addresses
+    if handle.parse::<std::net::Ipv4Addr>().is_ok() {
+        return false;
+    }
+    if handle.parse::<std::net::Ipv6Addr>().is_ok() {
+        return false;
+    }
+
+    // Block hex-encoded IPs (e.g., 0x7f000001)
+    if handle.starts_with("0x") || handle.starts_with("0X") {
+        return false;
+    }
+
+    // Block dangerous TLDs and hostnames
+    let blocked_patterns = [
+        "localhost",
+        ".local",
+        ".internal",
+        ".localhost",
+        ".arpa",
+        ".onion",
+    ];
+    for pattern in &blocked_patterns {
+        if handle == pattern.trim_start_matches('.') || handle.ends_with(pattern) {
+            return false;
+        }
+    }
+
+    // Block if any segment is purely numeric (could be IP-like)
+    let segments: Vec<&str> = handle.split('.').collect();
+    if segments.iter().all(|s| s.bytes().all(|b| b.is_ascii_digit())) {
+        return false;
+    }
+
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,6 +397,44 @@ mod tests {
         assert_eq!(resolution.method, ResolutionMethod::Cache);
     }
 
-    // Note: Integration tests for actual DNS/HTTP resolution would require
-    // network access or mocking infrastructure.
+    #[test]
+    fn test_safe_handle_valid() {
+        assert!(is_safe_handle("bsky.app"));
+        assert!(is_safe_handle("alice.bsky.social"));
+        assert!(is_safe_handle("my-handle.example.com"));
+        assert!(is_safe_handle("hyperintellectual-uncommercial-dudley.ngrok-free.dev"));
+    }
+
+    #[test]
+    fn test_safe_handle_blocks_ip() {
+        assert!(!is_safe_handle("127.0.0.1"));
+        assert!(!is_safe_handle("192.168.1.1"));
+        assert!(!is_safe_handle("169.254.169.254"));
+        assert!(!is_safe_handle("0x7f000001"));
+    }
+
+    #[test]
+    fn test_safe_handle_blocks_internal() {
+        assert!(!is_safe_handle("localhost"));
+        assert!(!is_safe_handle("app.localhost"));
+        assert!(!is_safe_handle("test.local"));
+        assert!(!is_safe_handle("host.internal"));
+    }
+
+    #[test]
+    fn test_safe_handle_blocks_short() {
+        assert!(!is_safe_handle("a"));
+        assert!(!is_safe_handle("ab"));
+        assert!(!is_safe_handle("abc"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_blocks_ssrf() {
+        let resolver = HandleResolver::new();
+        assert!(resolver.resolve("127.0.0.1").await.is_err());
+        assert!(resolver.resolve("localhost").await.is_err());
+        assert!(resolver.resolve("169.254.169.254").await.is_err());
+        assert!(resolver.resolve("0x7f000001").await.is_err());
+        assert!(resolver.resolve("evil.localhost").await.is_err());
+    }
 }

@@ -1,5 +1,6 @@
 //! XRPC route handlers for AT Protocol PDS.
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use axum::{
@@ -13,6 +14,7 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 
+use crate::blobs::BlobStore;
 use crate::error::PdsError;
 use crate::lexicon::LexiconStore;
 use crate::middleware::{RequireAdmin, RequireAuth};
@@ -23,7 +25,7 @@ use crate::xrpc::{
     CheckAccountStatusOutput, CreateRecordInput, CreateRecordOutput, CreateSessionInput,
     DeactivateAccountInput, DescribeRepoOutput, GetPreferencesOutput, GetRecordOutput,
     ListRecordEntry, ListRecordsOutput, PutPreferencesInput, PutRecordInput, PutRecordOutput,
-    SessionOutput, XrpcError,
+    SessionOutput, UploadBlobOutput, XrpcError,
 };
 
 /// Application state shared across handlers.
@@ -34,6 +36,8 @@ pub struct AppState {
     pub lexicons: LexiconStore,
     /// JWT secret for session tokens.
     pub jwt_secret: Vec<u8>,
+    /// Bcrypt hash of the account password.
+    pub password_hash: String,
     /// This PDS's hostname.
     pub hostname: String,
     /// DID of the account.
@@ -44,6 +48,16 @@ pub struct AppState {
     pub public_key_multibase: String,
     /// Firehose broadcast channel.
     pub firehose: Firehose,
+    /// Blob storage backend.
+    pub blob_store: Box<dyn BlobStore>,
+    /// Handle resolver for non-local handles.
+    pub handle_resolver: crate::handle::HandleResolver,
+    /// Rate limiter state (None to disable rate limiting).
+    pub rate_limits: Option<crate::rate_limit::RateLimitState>,
+    /// OAuth token storage for DPoP-bound tokens (None to disable OAuth).
+    pub oauth_storage: Option<crate::oauth_storage::OAuthSqliteStorage>,
+    /// Signing keypair for commit signatures (None if not configured).
+    pub signing_key: Option<cirrus_common::crypto::Keypair>,
 }
 
 /// Creates the XRPC router.
@@ -69,6 +83,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/xrpc/com.atproto.repo.createRecord", post(create_record))
         .route("/xrpc/com.atproto.repo.putRecord", post(put_record))
         .route("/xrpc/com.atproto.repo.deleteRecord", post(delete_record))
+        .route("/xrpc/com.atproto.repo.uploadBlob", post(upload_blob))
         // Sync endpoints
         .route("/xrpc/com.atproto.sync.getHead", get(get_head))
         .route("/xrpc/com.atproto.sync.getLatestCommit", get(get_latest_commit))
@@ -80,6 +95,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         // Health check
         .route("/health", get(health_check))
         .route("/.well-known/atproto-did", get(well_known_did))
+        .route("/.well-known/did.json", get(well_known_did_json))
         .with_state(state)
 }
 
@@ -151,12 +167,36 @@ pub struct GetRepoParams {
 // Handler implementations
 // ============================================================================
 
+/// Extracts the client IP from request headers, falling back to localhost.
+fn client_ip_from_headers(headers: &axum::http::HeaderMap) -> IpAddr {
+    headers
+        .get("x-forwarded-for")
+        .or_else(|| headers.get("x-real-ip"))
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .and_then(|s| s.trim().parse::<IpAddr>().ok())
+        .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+}
+
 async fn health_check() -> &'static str {
     "OK"
 }
 
 async fn well_known_did(State(state): State<Arc<AppState>>) -> String {
     state.did.clone()
+}
+
+/// Serves the DID document for `did:web` resolution.
+async fn well_known_did_json(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let doc = crate::did::create_did_document(
+        &state.did,
+        &state.handle,
+        &format!("https://{}", state.hostname),
+        &state.public_key_multibase,
+    );
+    Json(serde_json::to_value(doc).unwrap_or_default())
 }
 
 async fn describe_server(
@@ -172,9 +212,25 @@ async fn describe_server(
 
 async fn create_session(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Json(input): Json<CreateSessionInput>,
 ) -> Response {
-    match crate::auth::create_session(&input.identifier, &input.password, &state.jwt_secret) {
+    // Apply login rate limiting if enabled
+    if let Some(rate_limits) = &state.rate_limits {
+        let ip = client_ip_from_headers(&headers);
+        if let Err(e) = crate::rate_limit::check_rate_limit(&rate_limits.login, ip) {
+            return e.into_response();
+        }
+    }
+
+    let config = crate::auth::SessionConfig {
+        did: &state.did,
+        handle: &state.handle,
+        password_hash: &state.password_hash,
+        jwt_secret: &state.jwt_secret,
+    };
+
+    match crate::auth::create_session(&input.identifier, &input.password, &config) {
         Ok(tokens) => Json(SessionOutput {
             access_jwt: tokens.access_jwt,
             refresh_jwt: tokens.refresh_jwt,
@@ -187,8 +243,34 @@ async fn create_session(
 
 async fn refresh_session(
     State(state): State<Arc<AppState>>,
-    RequireAuth(auth): RequireAuth,
+    headers: axum::http::HeaderMap,
 ) -> Response {
+    // Manually extract auth to allow refresh-scoped tokens
+    let app_state = &*state;
+    let parts_result = axum::http::Request::builder()
+        .method("POST")
+        .uri("/xrpc/com.atproto.server.refreshSession");
+    let mut builder = parts_result;
+    for (key, value) in &headers {
+        builder = builder.header(key, value);
+    }
+    let (parts, _) = match builder.body(()) {
+        Ok(req) => req.into_parts(),
+        Err(_) => return crate::error::PdsError::AuthFailed("bad request".into()).into_response(),
+    };
+    let auth = match crate::middleware::extract_auth_for_refresh(&parts, app_state) {
+        Ok(a) => a,
+        Err(e) => return e.into_response(),
+    };
+
+    // Verify this is a refresh token
+    if auth.scope != "atproto:refresh" {
+        return crate::error::PdsError::AuthFailed(
+            "refresh endpoint requires a refresh token".into(),
+        )
+        .into_response();
+    }
+
     // Use the DID from the refresh token
     match crate::auth::refresh_tokens(&auth.did, &state.jwt_secret) {
         Ok(tokens) => Json(SessionOutput {
@@ -377,11 +459,86 @@ async fn list_records(
     Json(ListRecordsOutput { records, cursor }).into_response()
 }
 
+/// Builds a DAG-CBOR commit object, optionally signed with a secp256k1 key.
+///
+/// The commit follows the AT Protocol format with proper CBOR tag 42 CID links.
+/// DAG-CBOR requires map keys sorted by encoded byte length, then lexicographically.
+fn build_signed_commit(
+    did: &str,
+    data_cid: &cirrus_common::cid::Cid,
+    rev: &str,
+    prev_cid: Option<&cirrus_common::cid::Cid>,
+    signing_key: Option<&cirrus_common::crypto::Keypair>,
+) -> Result<(Vec<u8>, cirrus_common::cid::Cid), String> {
+    use ciborium::Value as CborValue;
+
+    // Encode a CID as a DAG-CBOR link: CBOR tag 42 wrapping 0x00 + CID bytes
+    let cid_link = |cid: &cirrus_common::cid::Cid| -> CborValue {
+        let mut cid_bytes = vec![0x00]; // identity multibase prefix
+        cid_bytes.extend_from_slice(&cid.to_bytes());
+        CborValue::Tag(42, Box::new(CborValue::Bytes(cid_bytes)))
+    };
+
+    let prev_value = match prev_cid {
+        Some(c) => cid_link(c),
+        None => CborValue::Null,
+    };
+
+    // Build unsigned commit (keys sorted by encoded byte length, then lexicographic)
+    // 3-char keys: "did", "rev" — 4-char keys: "data", "prev" — 7-char key: "version"
+    let unsigned = CborValue::Map(vec![
+        (CborValue::Text("did".to_string()), CborValue::Text(did.to_string())),
+        (CborValue::Text("rev".to_string()), CborValue::Text(rev.to_string())),
+        (CborValue::Text("data".to_string()), cid_link(data_cid)),
+        (CborValue::Text("prev".to_string()), prev_value.clone()),
+        (CborValue::Text("version".to_string()), CborValue::Integer(3.into())),
+    ]);
+
+    let mut unsigned_bytes = Vec::new();
+    ciborium::into_writer(&unsigned, &mut unsigned_bytes)
+        .map_err(|e| format!("failed to encode unsigned commit: {e}"))?;
+
+    // If we have a signing key, sign and include sig; otherwise produce unsigned commit
+    let commit_cbor = if let Some(key) = signing_key {
+        let sig = key.sign(&unsigned_bytes)
+            .map_err(|e| format!("failed to sign commit: {e}"))?;
+
+        // Build signed commit (sig is a 3-char key, sorted between "rev" and "data")
+        let signed = CborValue::Map(vec![
+            (CborValue::Text("did".to_string()), CborValue::Text(did.to_string())),
+            (CborValue::Text("rev".to_string()), CborValue::Text(rev.to_string())),
+            (CborValue::Text("sig".to_string()), CborValue::Bytes(sig)),
+            (CborValue::Text("data".to_string()), cid_link(data_cid)),
+            (CborValue::Text("prev".to_string()), prev_value),
+            (CborValue::Text("version".to_string()), CborValue::Integer(3.into())),
+        ]);
+
+        let mut signed_bytes = Vec::new();
+        ciborium::into_writer(&signed, &mut signed_bytes)
+            .map_err(|e| format!("failed to encode signed commit: {e}"))?;
+        signed_bytes
+    } else {
+        unsigned_bytes
+    };
+
+    let commit_cid = cirrus_common::cid::Cid::for_cbor(&commit_cbor);
+    Ok((commit_cbor, commit_cid))
+}
+
 async fn create_record(
     State(state): State<Arc<AppState>>,
     RequireAdmin(auth): RequireAdmin,
+    headers: axum::http::HeaderMap,
     Json(input): Json<CreateRecordInput>,
 ) -> Response {
+    // Apply general rate limiting
+    if let Some(rate_limits) = &state.rate_limits {
+        let ip = client_ip_from_headers(&headers);
+        if let Err(e) = crate::rate_limit::check_rate_limit(&rate_limits.general, ip) {
+            return e.into_response();
+        }
+    }
+
     // RequireAdmin already verified the user is the PDS owner
     if input.repo != auth.did {
         return PdsError::NotAuthorized("repo mismatch".into()).into_response();
@@ -395,6 +552,11 @@ async fn create_record(
         return PdsError::AccountDeactivated.into_response();
     }
 
+    // Validate collection NSID
+    if let Err(e) = crate::repo::validate_collection(&input.collection) {
+        return e.into_response();
+    }
+
     if input.validate {
         if let Err(e) = state.lexicons.validate_record(&input.collection, &input.record) {
             return e.into_response();
@@ -403,21 +565,110 @@ async fn create_record(
 
     let rkey = input.rkey.unwrap_or_else(generate_rkey);
 
+    // Validate rkey format
+    if let Err(e) = crate::repo::validate_rkey(&rkey) {
+        return e.into_response();
+    }
+
+    // Enforce max record payload size
+    let record_json = serde_json::to_vec(&input.record).unwrap_or_default();
+    if record_json.len() > crate::repo::MAX_RECORD_SIZE {
+        return PdsError::InvalidRecord(format!(
+            "record exceeds max size of {} bytes",
+            crate::repo::MAX_RECORD_SIZE
+        ))
+        .into_response();
+    }
+
     let cbor_bytes = match cirrus_common::cbor::encode(&input.record) {
         Ok(b) => b,
         Err(e) => return PdsError::InvalidRecord(e.to_string()).into_response(),
     };
 
-    let cid = cirrus_common::cid::Cid::for_cbor(&cbor_bytes).to_string();
+    let record_cid = cirrus_common::cid::Cid::for_cbor(&cbor_bytes);
+    let cid = record_cid.to_string();
 
     let block_key = format!("{}:{}", input.collection, rkey);
-    let repo_state = match state.storage.get_repo_state() {
+    let prev_state = match state.storage.get_repo_state() {
         Ok(s) => s,
         Err(e) => return e.into_response(),
     };
-    if let Err(e) = state.storage.put_block(&block_key, &cbor_bytes, repo_state.rev.as_deref()) {
+    if let Err(e) = state.storage.put_block(&block_key, &cbor_bytes, prev_state.rev.as_deref()) {
         return e.into_response();
     }
+
+    // Build the MST from all records in the repo (including the one we just wrote)
+    let all_blocks = match state.storage.get_all_blocks() {
+        Ok(b) => b,
+        Err(e) => return e.into_response(),
+    };
+    let mut mst_entries: Vec<(String, cirrus_common::cid::Cid)> = all_blocks
+        .iter()
+        .map(|b| {
+            let path = b.cid.replace(':', "/"); // storage uses collection:rkey, MST uses collection/rkey
+            let record_cid = cirrus_common::cid::Cid::for_cbor(&b.bytes);
+            (path, record_cid)
+        })
+        .collect();
+    mst_entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mst_result = crate::mst::build(&mst_entries);
+
+    // Build a signed DAG-CBOR commit pointing to the MST root
+    let rev = cirrus_common::Tid::now().to_string();
+    let prev_commit_cid = prev_state.root_cid.as_ref().and_then(|s| {
+        cirrus_common::cid::Cid::from_string(s).ok()
+    });
+
+    let (commit_cbor, commit_cid) = match build_signed_commit(
+        &auth.did,
+        &mst_result.root,
+        &rev,
+        prev_commit_cid.as_ref(),
+        state.signing_key.as_ref(),
+    ) {
+        Ok(result) => result,
+        Err(e) => return PdsError::InvalidRecord(e).into_response(),
+    };
+
+    // Update repo state with the new commit
+    let seq = match state.storage.update_repo_state(&commit_cid.to_string(), &rev) {
+        Ok(s) => s,
+        Err(e) => return e.into_response(),
+    };
+
+    // Build CAR with commit, MST nodes, and the new record block
+    let mut car_buf = Vec::new();
+    if let Ok(mut writer) = cirrus_common::car::CarWriter::new(&mut car_buf, commit_cid.clone()) {
+        let _ = writer.write_block(&commit_cid, &commit_cbor);
+        for (mst_bytes, mst_cid) in &mst_result.blocks {
+            let _ = writer.write_block(mst_cid, mst_bytes);
+        }
+        let _ = writer.write_block(&record_cid, &cbor_bytes);
+        drop(writer);
+    }
+
+    // Emit firehose commit event
+    let path = format!("{}/{rkey}", input.collection);
+    state.firehose.publish(crate::sequencer::FirehoseEvent::Commit(
+        crate::sequencer::CommitEvent {
+            seq,
+            rebase: false,
+            too_big: false,
+            repo: auth.did.clone(),
+            commit: commit_cid.to_string(),
+            rev: rev.clone(),
+            since: prev_state.rev,
+            blocks: car_buf,
+            ops: vec![crate::sequencer::RepoOpEvent {
+                action: "create".to_string(),
+                path,
+                cid: Some(cid.clone()),
+            }],
+            blobs: vec![],
+            time: chrono::Utc::now().to_rfc3339(),
+        },
+    ));
 
     let uri = make_at_uri(&auth.did, &input.collection, &rkey);
 
@@ -427,10 +678,27 @@ async fn create_record(
 async fn put_record(
     State(state): State<Arc<AppState>>,
     RequireAdmin(auth): RequireAdmin,
+    headers: axum::http::HeaderMap,
     Json(input): Json<PutRecordInput>,
 ) -> Response {
+    // Apply general rate limiting
+    if let Some(rate_limits) = &state.rate_limits {
+        let ip = client_ip_from_headers(&headers);
+        if let Err(e) = crate::rate_limit::check_rate_limit(&rate_limits.general, ip) {
+            return e.into_response();
+        }
+    }
+
     if input.repo != auth.did {
         return PdsError::NotAuthorized("repo mismatch".into()).into_response();
+    }
+
+    // Validate collection and rkey
+    if let Err(e) = crate::repo::validate_collection(&input.collection) {
+        return e.into_response();
+    }
+    if let Err(e) = crate::repo::validate_rkey(&input.rkey) {
+        return e.into_response();
     }
 
     let is_active = match state.storage.is_active() {
@@ -487,10 +755,27 @@ async fn put_record(
 async fn delete_record(
     State(state): State<Arc<AppState>>,
     RequireAdmin(auth): RequireAdmin,
+    headers: axum::http::HeaderMap,
     Json(input): Json<crate::xrpc::DeleteRecordInput>,
 ) -> Response {
+    // Apply general rate limiting
+    if let Some(rate_limits) = &state.rate_limits {
+        let ip = client_ip_from_headers(&headers);
+        if let Err(e) = crate::rate_limit::check_rate_limit(&rate_limits.general, ip) {
+            return e.into_response();
+        }
+    }
+
     if input.repo != auth.did {
         return PdsError::NotAuthorized("repo mismatch".into()).into_response();
+    }
+
+    // Validate collection and rkey
+    if let Err(e) = crate::repo::validate_collection(&input.collection) {
+        return e.into_response();
+    }
+    if let Err(e) = crate::repo::validate_rkey(&input.rkey) {
+        return e.into_response();
     }
 
     let is_active = match state.storage.is_active() {
@@ -562,13 +847,30 @@ async fn get_blob(
         return PdsError::RepoNotFound(params.did).into_response();
     }
 
-    match state.storage.get_block(&params.cid) {
+    match state.blob_store.get_blob(&params.cid) {
         Ok(Some(bytes)) => (
             StatusCode::OK,
             [("content-type", "application/octet-stream")],
             bytes,
         ).into_response(),
         Ok(None) => PdsError::RecordNotFound(format!("blob not found: {}", params.cid)).into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn upload_blob(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_auth): RequireAdmin,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream");
+
+    match state.blob_store.put_blob(&body, content_type) {
+        Ok(blob_ref) => Json(UploadBlobOutput { blob: blob_ref }).into_response(),
         Err(e) => e.into_response(),
     }
 }
@@ -581,7 +883,7 @@ async fn get_repo(
         return PdsError::RepoNotFound(params.did).into_response();
     }
 
-    let blocks = match state.storage.get_all_blocks() {
+    let all_blocks = match state.storage.get_all_blocks() {
         Ok(b) => b,
         Err(e) => return e.into_response(),
     };
@@ -591,19 +893,52 @@ async fn get_repo(
         Err(e) => return e.into_response(),
     };
 
-    let root_cid = match repo_state.root_cid {
-        Some(ref cid_str) => cirrus_common::cid::Cid::from_string(cid_str)
-            .unwrap_or_else(|_| cirrus_common::cid::Cid::for_cbor(&[])),
-        None => cirrus_common::cid::Cid::for_cbor(&[]),
+    // Build MST from all records
+    let mut mst_entries: Vec<(String, cirrus_common::cid::Cid)> = all_blocks
+        .iter()
+        .map(|b| {
+            let path = b.cid.replace(':', "/");
+            let record_cid = cirrus_common::cid::Cid::for_cbor(&b.bytes);
+            (path, record_cid)
+        })
+        .collect();
+    mst_entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mst_result = crate::mst::build(&mst_entries);
+
+    // Build signed commit pointing to MST root
+    let rev = repo_state.rev.as_deref().unwrap_or("initial");
+    let prev_commit_cid = repo_state.root_cid.as_ref().and_then(|s| {
+        cirrus_common::cid::Cid::from_string(s).ok()
+    });
+
+    let (commit_cbor, commit_cid) = match build_signed_commit(
+        &state.did,
+        &mst_result.root,
+        rev,
+        prev_commit_cid.as_ref(),
+        state.signing_key.as_ref(),
+    ) {
+        Ok(result) => result,
+        Err(e) => return PdsError::InvalidRecord(e).into_response(),
     };
 
+    // Write CAR: commit + MST nodes + record blocks
     let mut car_buf = Vec::new();
-    let mut writer = match cirrus_common::car::CarWriter::new(&mut car_buf, root_cid) {
+    let mut writer = match cirrus_common::car::CarWriter::new(&mut car_buf, commit_cid.clone()) {
         Ok(w) => w,
         Err(e) => return PdsError::InvalidRecord(format!("CAR header error: {e}")).into_response(),
     };
 
-    for block in blocks {
+    if let Err(e) = writer.write_block(&commit_cid, &commit_cbor) {
+        return PdsError::InvalidRecord(format!("CAR commit error: {e}")).into_response();
+    }
+    for (mst_bytes, mst_cid) in &mst_result.blocks {
+        if let Err(e) = writer.write_block(mst_cid, mst_bytes) {
+            return PdsError::InvalidRecord(format!("CAR MST error: {e}")).into_response();
+        }
+    }
+    for block in &all_blocks {
         let cid = cirrus_common::cid::Cid::for_cbor(&block.bytes);
         if let Err(e) = writer.write_block(&cid, &block.bytes) {
             return PdsError::InvalidRecord(format!("CAR block error: {e}")).into_response();
@@ -680,12 +1015,19 @@ async fn resolve_handle(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ResolveHandleParams>,
 ) -> Response {
+    // Fast path for the local handle
     if params.handle == state.handle {
-        Json(serde_json::json!({
+        return Json(serde_json::json!({
             "did": state.did
-        })).into_response()
-    } else {
-        PdsError::DidResolution(format!("handle not found: {}", params.handle)).into_response()
+        })).into_response();
+    }
+
+    // Resolve non-local handles via DNS TXT / HTTP
+    match state.handle_resolver.resolve(&params.handle).await {
+        Ok(resolution) => Json(serde_json::json!({
+            "did": resolution.did
+        })).into_response(),
+        Err(e) => e.into_response(),
     }
 }
 
@@ -723,11 +1065,17 @@ mod tests {
             storage,
             lexicons: LexiconStore::new(),
             jwt_secret: b"test-secret".to_vec(),
+            password_hash: String::new(),
             hostname: "test.local".to_string(),
             did: "did:plc:test".to_string(),
             handle: "test.local".to_string(),
             public_key_multibase: "zQ3shtest".to_string(),
             firehose: Firehose::new(),
+            blob_store: Box::new(crate::blobs::MemoryBlobStore::new()),
+            handle_resolver: crate::handle::HandleResolver::new(),
+            rate_limits: None,
+            oauth_storage: None,
+            signing_key: None,
         });
 
         let _router = create_router(state);
