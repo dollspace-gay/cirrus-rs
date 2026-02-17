@@ -43,6 +43,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Write CHANGELOG and README (#75)
 
 ### Added
+- Add labeler/moderation service integration (#113)
+- Add multi-user hosting support (#112)
+- Add did:plc as primary DID method (#109)
+- Add S3-compatible blob storage backend (#110)
+- Add full account status management (suspended, takendown states) (#111)
+- Add importRepo and listMissingBlobs endpoints for account migration (#108)
+- Implement com.atproto.admin.* API endpoints (#106)
+- Add reserveSigningKey endpoint (#107)
+- Add invite code XRPC endpoints (createInviteCode, createInviteCodes, getAccountInviteCodes) (#105)
 - Add account deletion flow (requestAccountDelete + deleteAccount) (#93)
 - Add email system for verification and password reset (#89)
 - Add image processing pipeline for blob uploads (#97)

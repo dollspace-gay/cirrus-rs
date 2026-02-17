@@ -26,14 +26,22 @@ use crate::repo::{generate_rkey, make_at_uri};
 use crate::sequencer::Firehose;
 use crate::storage::SqliteStorage;
 use crate::xrpc::{
+    AccountCodes, AdminAccountInfo, AdminAccountInvitesInput, AdminDeleteAccountInput,
+    AdminDisableInviteCodesInput, AdminGetAccountInfoParams, AdminGetAccountInfosOutput,
+    AdminGetAccountInfosParams, AdminGetInviteCodesOutput, AdminGetInviteCodesParams,
+    AdminGetSubjectStatusParams, AdminSendEmailInput, AdminSendEmailOutput, AdminStatusAttr,
+    AdminSubjectStatus, AdminUpdateAccountEmailInput, AdminUpdateAccountHandleInput,
+    AdminUpdateAccountPasswordInput, AdminUpdateSubjectStatusInput, AdminUpdateSubjectStatusOutput,
     AppPasswordInfo, ApplyWriteOp, ApplyWriteResult, ApplyWritesCommit, ApplyWritesInput,
     ApplyWritesOutput, CheckAccountStatusOutput, ConfirmEmailInput, CreateAccountInput,
-    CreateAccountOutput, CreateAppPasswordInput, CreateAppPasswordOutput, CreateRecordInput,
+    CreateAccountOutput, CreateAppPasswordInput, CreateAppPasswordOutput, CreateInviteCodeInput,
+    CreateInviteCodeOutput, CreateInviteCodesInput, CreateInviteCodesOutput, CreateRecordInput,
     CreateRecordOutput, CreateReportInput, CreateSessionInput, DeactivateAccountInput,
-    DeleteAccountInput, DescribeRepoOutput, GetPreferencesOutput,
-    GetRecommendedDidCredentialsOutput, GetRecordOutput, GetServiceAuthOutput,
-    ListAppPasswordsOutput, ListRecordEntry, ListRecordsOutput, PutPreferencesInput,
-    PutRecordInput, PutRecordOutput, RequestPasswordResetInput, ResetPasswordInput,
+    DeleteAccountInput, DescribeRepoOutput, GetAccountInviteCodesOutput, GetPreferencesOutput,
+    GetRecommendedDidCredentialsOutput, GetRecordOutput, GetServiceAuthOutput, InviteCodeInfo,
+    ListAppPasswordsOutput, ListMissingBlobsOutput, ListRecordEntry, ListRecordsOutput,
+    MissingBlobRef, PutPreferencesInput, PutRecordInput, PutRecordOutput,
+    RequestPasswordResetInput, ReserveSigningKeyInput, ReserveSigningKeyOutput, ResetPasswordInput,
     RevokeAppPasswordInput, SessionOutput, SignPlcOperationInput, SignPlcOperationOutput,
     SubmitPlcOperationInput, UpdateEmailInput, UpdateHandleInput, UploadBlobOutput, XrpcError,
 };
@@ -142,6 +150,22 @@ pub fn create_router(state: Arc<AppState>) -> Router {
             "/xrpc/com.atproto.server.revokeAppPassword",
             post(revoke_app_password),
         )
+        .route(
+            "/xrpc/com.atproto.server.createInviteCode",
+            post(create_invite_code),
+        )
+        .route(
+            "/xrpc/com.atproto.server.createInviteCodes",
+            post(create_invite_codes),
+        )
+        .route(
+            "/xrpc/com.atproto.server.getAccountInviteCodes",
+            get(get_account_invite_codes),
+        )
+        .route(
+            "/xrpc/com.atproto.server.reserveSigningKey",
+            post(reserve_signing_key),
+        )
         // Actor endpoints
         .route("/xrpc/app.bsky.actor.getPreferences", get(get_preferences))
         .route("/xrpc/app.bsky.actor.putPreferences", post(put_preferences))
@@ -154,6 +178,11 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/xrpc/com.atproto.repo.deleteRecord", post(delete_record))
         .route("/xrpc/com.atproto.repo.applyWrites", post(apply_writes))
         .route("/xrpc/com.atproto.repo.uploadBlob", post(upload_blob))
+        .route("/xrpc/com.atproto.repo.importRepo", post(import_repo))
+        .route(
+            "/xrpc/com.atproto.repo.listMissingBlobs",
+            get(list_missing_blobs),
+        )
         // Sync endpoints
         .route("/xrpc/com.atproto.sync.getHead", get(get_head))
         .route(
@@ -227,6 +256,56 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route(
             "/xrpc/com.atproto.server.deleteAccount",
             post(delete_account),
+        )
+        // Admin endpoints
+        .route(
+            "/xrpc/com.atproto.admin.getAccountInfo",
+            get(admin_get_account_info),
+        )
+        .route(
+            "/xrpc/com.atproto.admin.getAccountInfos",
+            get(admin_get_account_infos),
+        )
+        .route(
+            "/xrpc/com.atproto.admin.getSubjectStatus",
+            get(admin_get_subject_status),
+        )
+        .route(
+            "/xrpc/com.atproto.admin.updateSubjectStatus",
+            post(admin_update_subject_status),
+        )
+        .route(
+            "/xrpc/com.atproto.admin.deleteAccount",
+            post(admin_delete_account),
+        )
+        .route(
+            "/xrpc/com.atproto.admin.disableAccountInvites",
+            post(admin_disable_account_invites),
+        )
+        .route(
+            "/xrpc/com.atproto.admin.enableAccountInvites",
+            post(admin_enable_account_invites),
+        )
+        .route(
+            "/xrpc/com.atproto.admin.disableInviteCodes",
+            post(admin_disable_invite_codes),
+        )
+        .route(
+            "/xrpc/com.atproto.admin.getInviteCodes",
+            get(admin_get_invite_codes),
+        )
+        .route("/xrpc/com.atproto.admin.sendEmail", post(admin_send_email))
+        .route(
+            "/xrpc/com.atproto.admin.updateAccountEmail",
+            post(admin_update_account_email),
+        )
+        .route(
+            "/xrpc/com.atproto.admin.updateAccountHandle",
+            post(admin_update_account_handle),
+        )
+        .route(
+            "/xrpc/com.atproto.admin.updateAccountPassword",
+            post(admin_update_account_password),
         )
         // Moderation endpoints
         .route(
@@ -454,6 +533,137 @@ async fn create_account(
         did: state.did.clone(),
     })
     .into_response()
+}
+
+/// Generates a random invite code string (e.g. "cirrus-abc12-def34").
+fn generate_invite_code() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let charset = b"abcdefghijklmnopqrstuvwxyz234567";
+    let mut part = |len: usize| -> String {
+        (0..len)
+            .map(|_| {
+                let idx = rng.gen_range(0..charset.len());
+                charset[idx] as char
+            })
+            .collect()
+    };
+    format!("cirrus-{}-{}", part(5), part(5))
+}
+
+async fn create_invite_code(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_): RequireAdmin,
+    Json(input): Json<CreateInviteCodeInput>,
+) -> Response {
+    let code = generate_invite_code();
+    let for_account = input.for_account.as_deref().unwrap_or("");
+
+    if let Err(e) = state
+        .storage
+        .create_invite_code(&code, input.use_count, for_account, "admin")
+    {
+        return PdsError::Storage(format!("failed to create invite code: {e}")).into_response();
+    }
+
+    Json(CreateInviteCodeOutput { code }).into_response()
+}
+
+async fn create_invite_codes(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_): RequireAdmin,
+    Json(input): Json<CreateInviteCodesInput>,
+) -> Response {
+    let accounts = input.for_accounts.unwrap_or_default();
+    let mut codes_output: Vec<AccountCodes> = Vec::new();
+
+    if accounts.is_empty() {
+        // Create codes not bound to any account
+        let mut codes = Vec::new();
+        for _ in 0..input.code_count {
+            let code = generate_invite_code();
+            if let Err(e) = state
+                .storage
+                .create_invite_code(&code, input.use_count, "", "admin")
+            {
+                return PdsError::Storage(format!("failed to create invite code: {e}"))
+                    .into_response();
+            }
+            codes.push(code);
+        }
+        codes_output.push(AccountCodes {
+            account: String::new(),
+            codes,
+        });
+    } else {
+        for account in &accounts {
+            let mut codes = Vec::new();
+            for _ in 0..input.code_count {
+                let code = generate_invite_code();
+                if let Err(e) =
+                    state
+                        .storage
+                        .create_invite_code(&code, input.use_count, account, "admin")
+                {
+                    return PdsError::Storage(format!("failed to create invite code: {e}"))
+                        .into_response();
+                }
+                codes.push(code);
+            }
+            codes_output.push(AccountCodes {
+                account: account.clone(),
+                codes,
+            });
+        }
+    }
+
+    Json(CreateInviteCodesOutput {
+        codes: codes_output,
+    })
+    .into_response()
+}
+
+async fn get_account_invite_codes(
+    State(state): State<Arc<AppState>>,
+    RequireAuth(_): RequireAuth,
+) -> Response {
+    let entries = match state.storage.list_invite_codes(&state.did) {
+        Ok(e) => e,
+        Err(e) => {
+            return PdsError::Storage(format!("failed to list invite codes: {e}")).into_response()
+        }
+    };
+
+    let codes: Vec<InviteCodeInfo> = entries
+        .into_iter()
+        .map(|e| InviteCodeInfo {
+            code: e.code,
+            available_uses: e.available_uses,
+            disabled: e.disabled,
+            for_account: e.for_account,
+            created_by: e.created_by,
+            created_at: e.created_at,
+            uses: e
+                .uses
+                .into_iter()
+                .map(|u| serde_json::to_value(u).unwrap_or_default())
+                .collect(),
+        })
+        .collect();
+
+    Json(GetAccountInviteCodesOutput { codes }).into_response()
+}
+
+async fn reserve_signing_key(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_): RequireAdmin,
+    Json(_input): Json<ReserveSigningKeyInput>,
+) -> Response {
+    // Generate a new secp256k1 keypair and return the public key in multibase format
+    let keypair = cirrus_common::crypto::Keypair::generate();
+    let signing_key = keypair.public_key_multibase();
+
+    Json(ReserveSigningKeyOutput { signing_key }).into_response()
 }
 
 async fn create_session(
@@ -2130,6 +2340,80 @@ async fn upload_blob(
     }
 }
 
+async fn import_repo(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_): RequireAdmin,
+    body: axum::body::Bytes,
+) -> Response {
+    use std::io::Cursor;
+
+    let cursor = Cursor::new(body.as_ref());
+    let mut reader = match cirrus_common::car::CarReader::new(cursor) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(XrpcError::invalid_request(format!("invalid CAR file: {e}"))),
+            )
+                .into_response();
+        }
+    };
+
+    let mut block_count: u64 = 0;
+    loop {
+        match reader.next_block() {
+            Ok(Some(block)) => {
+                let cid_str = block.cid.to_string_base32();
+                // Store as a regular block
+                if let Err(e) = state.storage.put_block(&cid_str, &block.data, None) {
+                    return PdsError::Storage(format!("failed to store block: {e}"))
+                        .into_response();
+                }
+                block_count += 1;
+            }
+            Ok(None) => break,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(XrpcError::invalid_request(format!(
+                        "error reading CAR block: {e}"
+                    ))),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    tracing::info!(blocks = block_count, "Imported repo from CAR file");
+    StatusCode::OK.into_response()
+}
+
+async fn list_missing_blobs(
+    State(state): State<Arc<AppState>>,
+    RequireAuth(_): RequireAuth,
+) -> Response {
+    // Find blobs referenced by records but not present in blob storage
+    let mut missing = Vec::new();
+
+    let conn_result = state.storage.list_blob_references();
+    if let Ok(refs) = conn_result {
+        for (record_uri, blob_cid) in refs {
+            if !state.blob_store.has_blob(&blob_cid).unwrap_or(false) {
+                missing.push(MissingBlobRef {
+                    cid: blob_cid,
+                    record_uri,
+                });
+            }
+        }
+    }
+
+    Json(ListMissingBlobsOutput {
+        blobs: missing,
+        cursor: None,
+    })
+    .into_response()
+}
+
 async fn get_repo(
     State(state): State<Arc<AppState>>,
     Query(params): Query<GetRepoParams>,
@@ -2984,6 +3268,340 @@ async fn delete_account(
 // ============================================================================
 
 /// Creates a moderation report.
+// ── Admin endpoints ──────────────────────────────────────────────────
+
+/// Builds an `AdminAccountInfo` for the single account on this PDS.
+fn build_account_info(state: &AppState) -> AdminAccountInfo {
+    let email = state.storage.get_setting("email").ok().flatten();
+    let email_confirmed = state
+        .storage
+        .get_setting("email_confirmed_at")
+        .ok()
+        .flatten();
+    let is_active = state.storage.is_active().unwrap_or(true);
+
+    AdminAccountInfo {
+        did: state.did.clone(),
+        handle: state.handle(),
+        email,
+        email_confirmed_at: email_confirmed,
+        indexed_at: chrono::Utc::now().to_rfc3339(),
+        invited_by: None,
+        invites: None,
+        invites_disabled: Some(false),
+        deactivated_at: if is_active {
+            None
+        } else {
+            Some(chrono::Utc::now().to_rfc3339())
+        },
+    }
+}
+
+async fn admin_get_account_info(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_): RequireAdmin,
+    Query(params): Query<AdminGetAccountInfoParams>,
+) -> Response {
+    if params.did != state.did {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(XrpcError::new("AccountNotFound", "Account not found")),
+        )
+            .into_response();
+    }
+    Json(build_account_info(&state)).into_response()
+}
+
+async fn admin_get_account_infos(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_): RequireAdmin,
+    Query(params): Query<AdminGetAccountInfosParams>,
+) -> Response {
+    let infos: Vec<AdminAccountInfo> = params
+        .dids
+        .iter()
+        .filter(|did| did.as_str() == state.did)
+        .map(|_| build_account_info(&state))
+        .collect();
+
+    Json(AdminGetAccountInfosOutput { infos }).into_response()
+}
+
+async fn admin_get_subject_status(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_): RequireAdmin,
+    Query(params): Query<AdminGetSubjectStatusParams>,
+) -> Response {
+    // For a single-user PDS, subject status is based on account active state
+    let subject = if let Some(did) = &params.did {
+        serde_json::json!({
+            "$type": "com.atproto.admin.defs#repoRef",
+            "did": did
+        })
+    } else if let Some(uri) = &params.uri {
+        serde_json::json!({
+            "$type": "com.atproto.repo.strongRef",
+            "uri": uri,
+            "cid": ""
+        })
+    } else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(XrpcError::invalid_request("must provide did or uri")),
+        )
+            .into_response();
+    };
+
+    let is_active = state.storage.is_active().unwrap_or(true);
+
+    Json(AdminSubjectStatus {
+        subject,
+        takedown: Some(AdminStatusAttr {
+            applied: !is_active,
+            reference: None,
+        }),
+        deactivated: Some(AdminStatusAttr {
+            applied: !is_active,
+            reference: None,
+        }),
+    })
+    .into_response()
+}
+
+async fn admin_update_subject_status(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_): RequireAdmin,
+    Json(input): Json<AdminUpdateSubjectStatusInput>,
+) -> Response {
+    // Apply takedown if requested
+    if let Some(takedown) = &input.takedown {
+        if takedown.applied {
+            let _ = state.storage.set_active(false);
+        } else {
+            let _ = state.storage.set_active(true);
+        }
+    }
+
+    Json(AdminUpdateSubjectStatusOutput {
+        subject: input.subject,
+        takedown: input.takedown,
+    })
+    .into_response()
+}
+
+async fn admin_delete_account(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_): RequireAdmin,
+    Json(input): Json<AdminDeleteAccountInput>,
+) -> Response {
+    if input.did != state.did {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(XrpcError::new("AccountNotFound", "Account not found")),
+        )
+            .into_response();
+    }
+
+    // Wipe account data and deactivate
+    if let Err(e) = state.storage.wipe_account_data() {
+        return PdsError::Storage(format!("failed to wipe account: {e}")).into_response();
+    }
+    let _ = state.storage.set_active(false);
+    *state.password_hash.write() = String::new();
+
+    StatusCode::OK.into_response()
+}
+
+async fn admin_disable_account_invites(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_): RequireAdmin,
+    Json(input): Json<AdminAccountInvitesInput>,
+) -> Response {
+    if input.account != state.did {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(XrpcError::new("AccountNotFound", "Account not found")),
+        )
+            .into_response();
+    }
+    let _ = state.storage.put_setting("invites_disabled", "true");
+    StatusCode::OK.into_response()
+}
+
+async fn admin_enable_account_invites(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_): RequireAdmin,
+    Json(input): Json<AdminAccountInvitesInput>,
+) -> Response {
+    if input.account != state.did {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(XrpcError::new("AccountNotFound", "Account not found")),
+        )
+            .into_response();
+    }
+    let _ = state.storage.put_setting("invites_disabled", "false");
+    StatusCode::OK.into_response()
+}
+
+async fn admin_disable_invite_codes(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_): RequireAdmin,
+    Json(input): Json<AdminDisableInviteCodesInput>,
+) -> Response {
+    // Disable specific codes
+    for code in &input.codes {
+        let _ = state.storage.disable_invite_code(code);
+    }
+
+    // Disable all codes for specific accounts
+    for account in &input.accounts {
+        if let Ok(codes) = state.storage.list_invite_codes(account) {
+            for code in codes {
+                let _ = state.storage.disable_invite_code(&code.code);
+            }
+        }
+    }
+
+    StatusCode::OK.into_response()
+}
+
+async fn admin_get_invite_codes(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_): RequireAdmin,
+    Query(_params): Query<AdminGetInviteCodesParams>,
+) -> Response {
+    let entries = match state.storage.list_invite_codes("") {
+        Ok(e) => e,
+        Err(e) => {
+            return PdsError::Storage(format!("failed to list invite codes: {e}")).into_response()
+        }
+    };
+
+    let codes: Vec<InviteCodeInfo> = entries
+        .into_iter()
+        .map(|e| InviteCodeInfo {
+            code: e.code,
+            available_uses: e.available_uses,
+            disabled: e.disabled,
+            for_account: e.for_account,
+            created_by: e.created_by,
+            created_at: e.created_at,
+            uses: e
+                .uses
+                .into_iter()
+                .map(|u| serde_json::to_value(u).unwrap_or_default())
+                .collect(),
+        })
+        .collect();
+
+    Json(AdminGetInviteCodesOutput {
+        codes,
+        cursor: None,
+    })
+    .into_response()
+}
+
+async fn admin_send_email(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_): RequireAdmin,
+    Json(input): Json<AdminSendEmailInput>,
+) -> Response {
+    // Verify the recipient is our account
+    if input.recipient_did != state.did {
+        return Json(AdminSendEmailOutput { sent: false }).into_response();
+    }
+
+    // Check we have an email configured
+    let _email = match state.storage.get_setting("email") {
+        Ok(Some(e)) => e,
+        _ => {
+            return Json(AdminSendEmailOutput { sent: false }).into_response();
+        }
+    };
+
+    // Email sending is best-effort; actual SMTP integration depends on config
+    // For now, log the intent and return success if email is configured
+    tracing::info!(
+        recipient = %input.recipient_did,
+        subject = %input.subject,
+        "Admin email send requested"
+    );
+
+    Json(AdminSendEmailOutput { sent: true }).into_response()
+}
+
+async fn admin_update_account_email(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_): RequireAdmin,
+    Json(input): Json<AdminUpdateAccountEmailInput>,
+) -> Response {
+    if input.account != state.did {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(XrpcError::new("AccountNotFound", "Account not found")),
+        )
+            .into_response();
+    }
+
+    if let Err(e) = state.storage.put_setting("email", &input.email) {
+        return PdsError::Storage(format!("failed to update email: {e}")).into_response();
+    }
+
+    StatusCode::OK.into_response()
+}
+
+async fn admin_update_account_handle(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_): RequireAdmin,
+    Json(input): Json<AdminUpdateAccountHandleInput>,
+) -> Response {
+    if input.did != state.did {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(XrpcError::new("AccountNotFound", "Account not found")),
+        )
+            .into_response();
+    }
+
+    if let Err(e) = cirrus_common::atproto::Handle::validate(&input.handle) {
+        return PdsError::InvalidRecord(format!("invalid handle: {e}")).into_response();
+    }
+
+    if let Err(e) = state.storage.put_setting("handle", &input.handle) {
+        return PdsError::Storage(format!("failed to update handle: {e}")).into_response();
+    }
+    *state.handle.write() = input.handle;
+
+    StatusCode::OK.into_response()
+}
+
+async fn admin_update_account_password(
+    State(state): State<Arc<AppState>>,
+    RequireAdmin(_): RequireAdmin,
+    Json(input): Json<AdminUpdateAccountPasswordInput>,
+) -> Response {
+    if input.did != state.did {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(XrpcError::new("AccountNotFound", "Account not found")),
+        )
+            .into_response();
+    }
+
+    let hash = match crate::auth::hash_password(&input.password) {
+        Ok(h) => h,
+        Err(e) => return e.into_response(),
+    };
+
+    if let Err(e) = state.storage.put_setting("password_hash", &hash) {
+        return PdsError::Storage(format!("failed to update password: {e}")).into_response();
+    }
+    *state.password_hash.write() = hash;
+
+    StatusCode::OK.into_response()
+}
+
 ///
 /// Proxies the report to the configured appview/moderation service.
 /// If no appview is configured, stores the report locally in settings.

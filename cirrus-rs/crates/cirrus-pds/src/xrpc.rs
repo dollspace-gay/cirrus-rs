@@ -546,6 +546,103 @@ pub struct CreateReportOutput {
     pub created_at: String,
 }
 
+/// Create invite code input.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateInviteCodeInput {
+    /// Number of uses for this code.
+    #[serde(rename = "useCount", default = "default_one")]
+    pub use_count: i64,
+    /// Account to assign the invite code to (optional).
+    #[serde(rename = "forAccount", skip_serializing_if = "Option::is_none")]
+    pub for_account: Option<String>,
+}
+
+fn default_one() -> i64 {
+    1
+}
+
+/// Create invite code output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateInviteCodeOutput {
+    /// The generated invite code.
+    pub code: String,
+}
+
+/// Create invite codes (batch) input.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateInviteCodesInput {
+    /// Number of codes to create.
+    #[serde(rename = "codeCount", default = "default_one")]
+    pub code_count: i64,
+    /// Number of uses per code.
+    #[serde(rename = "useCount", default = "default_one")]
+    pub use_count: i64,
+    /// Accounts to assign codes to (optional).
+    #[serde(rename = "forAccounts", skip_serializing_if = "Option::is_none")]
+    pub for_accounts: Option<Vec<String>>,
+}
+
+/// Create invite codes output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateInviteCodesOutput {
+    /// The generated codes.
+    pub codes: Vec<AccountCodes>,
+}
+
+/// Account-to-code mapping.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountCodes {
+    /// Account DID.
+    pub account: String,
+    /// The generated codes.
+    pub codes: Vec<String>,
+}
+
+/// Get account invite codes output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetAccountInviteCodesOutput {
+    /// The invite codes.
+    pub codes: Vec<InviteCodeInfo>,
+}
+
+/// Invite code info for API responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InviteCodeInfo {
+    /// The code string.
+    pub code: String,
+    /// Number of available uses.
+    #[serde(rename = "availableUses")]
+    pub available_uses: i64,
+    /// Whether the code is disabled.
+    pub disabled: bool,
+    /// Account this code is for.
+    #[serde(rename = "forAccount")]
+    pub for_account: String,
+    /// Who created the code.
+    #[serde(rename = "createdBy")]
+    pub created_by: String,
+    /// When the code was created.
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    /// List of uses.
+    pub uses: Vec<serde_json::Value>,
+}
+
+/// Reserve signing key input.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReserveSigningKeyInput {
+    /// The DID to reserve the key for (optional).
+    pub did: Option<String>,
+}
+
+/// Reserve signing key output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReserveSigningKeyOutput {
+    /// The reserved signing key in DID key format.
+    #[serde(rename = "signingKey")]
+    pub signing_key: String,
+}
+
 /// Delete account input.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteAccountInput {
@@ -555,6 +652,239 @@ pub struct DeleteAccountInput {
     pub password: String,
     /// The deletion confirmation token.
     pub token: String,
+}
+
+// ── Repo migration types ─────────────────────────────────────────────
+
+/// List missing blobs output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListMissingBlobsOutput {
+    /// List of missing blob references.
+    pub blobs: Vec<MissingBlobRef>,
+    /// Pagination cursor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+/// A reference to a missing blob.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissingBlobRef {
+    /// CID of the missing blob.
+    pub cid: String,
+    /// Record AT-URI that references this blob.
+    #[serde(rename = "recordUri")]
+    pub record_uri: String,
+}
+
+// ── Admin API types ──────────────────────────────────────────────────
+
+/// Admin: get account info query params.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminGetAccountInfoParams {
+    /// DID of the account.
+    pub did: String,
+}
+
+/// Admin: account info response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminAccountInfo {
+    /// Account DID.
+    pub did: String,
+    /// Account handle.
+    pub handle: String,
+    /// Account email (if set).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// Whether email is confirmed.
+    #[serde(rename = "emailConfirmedAt", skip_serializing_if = "Option::is_none")]
+    pub email_confirmed_at: Option<String>,
+    /// When the account was indexed.
+    #[serde(rename = "indexedAt")]
+    pub indexed_at: String,
+    /// Invite code used to create the account.
+    #[serde(rename = "invitedBy", skip_serializing_if = "Option::is_none")]
+    pub invited_by: Option<serde_json::Value>,
+    /// Invite codes created by this account.
+    #[serde(rename = "invites", skip_serializing_if = "Option::is_none")]
+    pub invites: Option<Vec<InviteCodeInfo>>,
+    /// Whether invites are disabled for this account.
+    #[serde(rename = "invitesDisabled", skip_serializing_if = "Option::is_none")]
+    pub invites_disabled: Option<bool>,
+    /// Account deactivation info.
+    #[serde(rename = "deactivatedAt", skip_serializing_if = "Option::is_none")]
+    pub deactivated_at: Option<String>,
+}
+
+/// Admin: get account infos input.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminGetAccountInfosParams {
+    /// List of DIDs to look up.
+    pub dids: Vec<String>,
+}
+
+/// Admin: get account infos output.
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminGetAccountInfosOutput {
+    /// Account info list.
+    pub infos: Vec<AdminAccountInfo>,
+}
+
+/// Subject status reference (a DID or AT-URI + CID).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminSubjectStatus {
+    /// Subject (DID or AT-URI).
+    pub subject: serde_json::Value,
+    /// Takedown reference (if taken down).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub takedown: Option<AdminStatusAttr>,
+    /// Deactivation info.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deactivated: Option<AdminStatusAttr>,
+}
+
+/// A status attribute with an applied flag and optional reference.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminStatusAttr {
+    /// Whether the status is applied.
+    pub applied: bool,
+    /// Optional reference string (e.g. moderation report ID).
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+}
+
+/// Admin: get subject status query params.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminGetSubjectStatusParams {
+    /// Subject DID.
+    #[serde(default)]
+    pub did: Option<String>,
+    /// Subject AT-URI.
+    #[serde(default)]
+    pub uri: Option<String>,
+    /// Subject blob CID.
+    #[serde(default)]
+    pub blob: Option<String>,
+}
+
+/// Admin: update subject status input.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminUpdateSubjectStatusInput {
+    /// The subject.
+    pub subject: serde_json::Value,
+    /// Takedown status.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub takedown: Option<AdminStatusAttr>,
+    /// Deactivation status.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deactivated: Option<AdminStatusAttr>,
+}
+
+/// Admin: update subject status output.
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminUpdateSubjectStatusOutput {
+    /// The subject.
+    pub subject: serde_json::Value,
+    /// Takedown status.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub takedown: Option<AdminStatusAttr>,
+}
+
+/// Admin: send email input.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminSendEmailInput {
+    /// Recipient DID.
+    #[serde(rename = "recipientDid")]
+    pub recipient_did: String,
+    /// Email subject line.
+    pub subject: String,
+    /// Email body content.
+    pub content: String,
+    /// Sender DID.
+    #[serde(rename = "senderDid")]
+    pub sender_did: String,
+}
+
+/// Admin: send email output.
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminSendEmailOutput {
+    /// Whether the email was sent.
+    pub sent: bool,
+}
+
+/// Admin: update account email input.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminUpdateAccountEmailInput {
+    /// Account DID.
+    pub account: String,
+    /// New email address.
+    pub email: String,
+}
+
+/// Admin: update account handle input.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminUpdateAccountHandleInput {
+    /// Account DID.
+    pub did: String,
+    /// New handle.
+    pub handle: String,
+}
+
+/// Admin: update account password input.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminUpdateAccountPasswordInput {
+    /// Account DID.
+    pub did: String,
+    /// New password.
+    pub password: String,
+}
+
+/// Admin: delete account input.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminDeleteAccountInput {
+    /// Account DID.
+    pub did: String,
+}
+
+/// Admin: disable/enable account invites input.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminAccountInvitesInput {
+    /// Account DID.
+    pub account: String,
+}
+
+/// Admin: disable invite codes input.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminDisableInviteCodesInput {
+    /// Codes to disable.
+    #[serde(default)]
+    pub codes: Vec<String>,
+    /// Accounts whose codes should be disabled.
+    #[serde(default)]
+    pub accounts: Vec<String>,
+}
+
+/// Admin: get invite codes query params.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdminGetInviteCodesParams {
+    /// Sort order.
+    #[serde(default)]
+    pub sort: Option<String>,
+    /// Max results.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Pagination cursor.
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
+/// Admin: get invite codes output.
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminGetInviteCodesOutput {
+    /// Invite codes.
+    pub codes: Vec<InviteCodeInfo>,
+    /// Pagination cursor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 #[cfg(test)]

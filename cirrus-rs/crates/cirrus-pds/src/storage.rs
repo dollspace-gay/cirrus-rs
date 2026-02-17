@@ -146,7 +146,153 @@ const MIGRATIONS: &[(i64, &str)] = &[
         CREATE INDEX IF NOT EXISTS idx_email_tokens_expires ON email_tokens(expires_at);
     ",
     ),
+    // Migration 5: Invite codes for account creation gating.
+    (
+        5,
+        r"
+        CREATE TABLE IF NOT EXISTS invite_codes (
+            code TEXT PRIMARY KEY,
+            available_uses INTEGER NOT NULL DEFAULT 1,
+            disabled INTEGER NOT NULL DEFAULT 0,
+            for_account TEXT NOT NULL DEFAULT '',
+            created_by TEXT NOT NULL DEFAULT 'admin',
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS invite_code_uses (
+            code TEXT NOT NULL REFERENCES invite_codes(code),
+            used_by TEXT NOT NULL,
+            used_at TEXT DEFAULT (datetime('now')),
+            PRIMARY KEY (code, used_by)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_invite_codes_for_account ON invite_codes(for_account);
+        CREATE INDEX IF NOT EXISTS idx_invite_code_uses_code ON invite_code_uses(code);
+    ",
+    ),
+    // Migration 6: Account status field for comprehensive state management.
+    (
+        6,
+        r"
+        ALTER TABLE repo_state ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+        ALTER TABLE repo_state ADD COLUMN status_changed_at TEXT;
+        ALTER TABLE repo_state ADD COLUMN takedown_ref TEXT;
+    ",
+    ),
+    // Migration 7: Multi-user accounts table for hosting multiple accounts on one PDS.
+    (
+        7,
+        r"
+        CREATE TABLE IF NOT EXISTS accounts (
+            did TEXT PRIMARY KEY,
+            handle TEXT NOT NULL UNIQUE,
+            email TEXT,
+            password_hash TEXT NOT NULL,
+            signing_key_hex TEXT,
+            recovery_key_hex TEXT,
+            invite_code TEXT,
+            email_confirmed INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT DEFAULT (datetime('now')),
+            deactivated_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_accounts_handle ON accounts(handle);
+        CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email);
+        CREATE INDEX IF NOT EXISTS idx_accounts_status ON accounts(status);
+    ",
+    ),
 ];
+
+/// Account status values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountStatus {
+    /// Account is active and operational.
+    Active,
+    /// Account is deactivated by the user (reversible).
+    Deactivated,
+    /// Account is suspended by admin/moderation.
+    Suspended,
+    /// Account has been deleted.
+    Deleted,
+    /// Account has been taken down by moderation.
+    Takendown,
+}
+
+impl AccountStatus {
+    /// Returns the string representation of the status.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Deactivated => "deactivated",
+            Self::Suspended => "suspended",
+            Self::Deleted => "deleted",
+            Self::Takendown => "takendown",
+        }
+    }
+
+    /// Parses a status from a string.
+    #[must_use]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "active" => Some(Self::Active),
+            "deactivated" => Some(Self::Deactivated),
+            "suspended" => Some(Self::Suspended),
+            "deleted" => Some(Self::Deleted),
+            "takendown" => Some(Self::Takendown),
+            _ => None,
+        }
+    }
+}
+
+/// A user account entry for multi-user PDS hosting.
+#[derive(Debug, Clone)]
+pub struct AccountEntry {
+    /// The account's DID (primary identifier).
+    pub did: String,
+    /// The account's handle.
+    pub handle: String,
+    /// Email address (optional).
+    pub email: Option<String>,
+    /// Bcrypt-hashed password.
+    pub password_hash: String,
+    /// Hex-encoded signing key (optional).
+    pub signing_key_hex: Option<String>,
+    /// Hex-encoded recovery key for `did:plc` (optional).
+    pub recovery_key_hex: Option<String>,
+    /// Invite code used to create the account (optional).
+    pub invite_code: Option<String>,
+    /// Whether the email has been confirmed.
+    pub email_confirmed: bool,
+    /// Account status.
+    pub status: AccountStatus,
+    /// When the account was created (ISO 8601).
+    pub created_at: Option<String>,
+    /// When the account was deactivated (ISO 8601, if applicable).
+    pub deactivated_at: Option<String>,
+}
+
+impl AccountEntry {
+    /// Constructs an `AccountEntry` from a SQLite row.
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        let email_confirmed: i32 = row.get(7)?;
+        let status_str: String = row.get(8)?;
+        Ok(Self {
+            did: row.get(0)?,
+            handle: row.get(1)?,
+            email: row.get(2)?,
+            password_hash: row.get(3)?,
+            signing_key_hex: row.get(4)?,
+            recovery_key_hex: row.get(5)?,
+            invite_code: row.get(6)?,
+            email_confirmed: email_confirmed != 0,
+            status: AccountStatus::from_str(&status_str).unwrap_or(AccountStatus::Active),
+            created_at: row.get(9)?,
+            deactivated_at: row.get(10)?,
+        })
+    }
+}
 
 /// Repository storage backed by `SQLite`.
 ///
@@ -371,15 +517,18 @@ impl SqliteStorage {
 
     /// Gets the current repo state using an existing connection.
     pub(crate) fn get_repo_state_conn(conn: &Connection) -> Result<RepoState> {
-        let mut stmt =
-            conn.prepare("SELECT root_cid, rev, seq, active FROM repo_state WHERE id = 1")?;
+        let mut stmt = conn.prepare(
+            "SELECT root_cid, rev, seq, active, COALESCE(status, 'active') FROM repo_state WHERE id = 1",
+        )?;
 
         Ok(stmt.query_row([], |row| {
+            let status_str: String = row.get(4)?;
             Ok(RepoState {
                 root_cid: row.get(0)?,
                 rev: row.get(1)?,
                 seq: row.get(2)?,
                 active: row.get(3)?,
+                status: AccountStatus::from_str(&status_str).unwrap_or(AccountStatus::Active),
             })
         })?)
     }
@@ -434,6 +583,57 @@ impl SqliteStorage {
             params![i32::from(active)],
         )?;
         Ok(())
+    }
+
+    /// Gets the full account status.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn get_account_status(&self) -> Result<AccountStatus> {
+        let conn = self.conn.lock();
+        let status: String = conn
+            .query_row("SELECT status FROM repo_state WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or_else(|_| "active".to_string());
+        Ok(AccountStatus::from_str(&status).unwrap_or(AccountStatus::Active))
+    }
+
+    /// Sets the full account status with an optional takedown reference.
+    ///
+    /// Also updates the `active` column for backwards compatibility.
+    ///
+    /// # Errors
+    /// Returns an error if the update fails.
+    pub fn set_account_status(
+        &self,
+        status: AccountStatus,
+        takedown_ref: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        let active = i32::from(status == AccountStatus::Active);
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE repo_state SET status = ?, active = ?, status_changed_at = ?, takedown_ref = ? WHERE id = 1",
+            params![status.as_str(), active, now, takedown_ref],
+        )?;
+        Ok(())
+    }
+
+    /// Gets the takedown reference for the account, if any.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn get_takedown_ref(&self) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let ref_str: Option<String> = conn
+            .query_row(
+                "SELECT takedown_ref FROM repo_state WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(None);
+        Ok(ref_str)
     }
 
     /// Gets user preferences as a JSON array.
@@ -842,6 +1042,20 @@ impl SqliteStorage {
         Ok(cids)
     }
 
+    /// Lists all blob references (record_uri, blob_cid) from the `record_blob` table.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn list_blob_references(&self) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare("SELECT record_uri, blob_cid FROM record_blob")?;
+        let refs = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(std::result::Result::ok)
+            .collect();
+        Ok(refs)
+    }
+
     /// Finds blob CIDs that have no remaining references in `record_blob`.
     ///
     /// Given a list of candidate CIDs, returns those with zero references.
@@ -1139,6 +1353,40 @@ pub struct RepoState {
     pub seq: i64,
     /// Whether the account is active.
     pub active: bool,
+    /// Account status (active, deactivated, suspended, deleted, takendown).
+    pub status: AccountStatus,
+}
+
+/// An invite code with metadata and usage info.
+#[derive(Debug, Clone)]
+pub struct InviteCodeEntry {
+    /// The invite code string.
+    pub code: String,
+    /// Number of times this code can be used.
+    pub available_uses: i64,
+    /// Whether this code has been disabled.
+    pub disabled: bool,
+    /// Account this code is assigned to (empty for admin-created codes).
+    pub for_account: String,
+    /// Who created this code.
+    pub created_by: String,
+    /// When the code was created (ISO 8601).
+    pub created_at: String,
+    /// List of accounts that used this code.
+    pub uses: Vec<InviteCodeUse>,
+    /// Total number of times this code has been used.
+    pub use_count: i64,
+}
+
+/// A record of an invite code being used.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InviteCodeUse {
+    /// DID of the account that used the code.
+    #[serde(rename = "usedBy")]
+    pub used_by: String,
+    /// When the code was used (ISO 8601).
+    #[serde(rename = "usedAt")]
+    pub used_at: String,
 }
 
 /// Valid email token purposes.
@@ -1386,6 +1634,388 @@ impl SqliteStorage {
             [],
         )?;
         Ok(count)
+    }
+
+    // ── Invite code operations ──────────────────────────────────────────
+
+    /// Creates a new invite code.
+    ///
+    /// # Errors
+    /// Returns an error if the insert fails.
+    pub fn create_invite_code(
+        &self,
+        code: &str,
+        available_uses: i64,
+        for_account: &str,
+        created_by: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO invite_codes (code, available_uses, for_account, created_by) VALUES (?, ?, ?, ?)",
+            params![code, available_uses, for_account, created_by],
+        )?;
+        Ok(())
+    }
+
+    /// Gets an invite code with its current use count.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn get_invite_code(&self, code: &str) -> Result<Option<InviteCodeEntry>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT c.code, c.available_uses, c.disabled, c.for_account, c.created_by, c.created_at,
+                    COUNT(u.used_by) as use_count
+             FROM invite_codes c
+             LEFT JOIN invite_code_uses u ON c.code = u.code
+             WHERE c.code = ?
+             GROUP BY c.code",
+        )?;
+        let entry = stmt
+            .query_row(params![code], |row| {
+                Ok(InviteCodeEntry {
+                    code: row.get(0)?,
+                    available_uses: row.get(1)?,
+                    disabled: row.get::<_, i32>(2)? != 0,
+                    for_account: row.get(3)?,
+                    created_by: row.get(4)?,
+                    created_at: row.get(5)?,
+                    uses: Vec::new(),
+                    use_count: row.get(6)?,
+                })
+            })
+            .ok();
+        Ok(entry)
+    }
+
+    /// Uses an invite code (records who used it). Returns `false` if the code
+    /// is invalid, disabled, or has no remaining uses.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn use_invite_code(&self, code: &str, used_by: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+
+        // Check the code exists, is not disabled, and has remaining uses
+        let valid: bool = conn
+            .prepare(
+                "SELECT 1 FROM invite_codes c
+                 WHERE c.code = ? AND c.disabled = 0
+                 AND (SELECT COUNT(*) FROM invite_code_uses WHERE code = c.code) < c.available_uses",
+            )?
+            .exists(params![code])?;
+
+        if !valid {
+            return Ok(false);
+        }
+
+        conn.execute(
+            "INSERT OR IGNORE INTO invite_code_uses (code, used_by) VALUES (?, ?)",
+            params![code, used_by],
+        )?;
+        Ok(true)
+    }
+
+    /// Lists invite codes for a specific account, or all codes if `for_account` is empty.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn list_invite_codes(&self, for_account: &str) -> Result<Vec<InviteCodeEntry>> {
+        let conn = self.conn.lock();
+        let query = if for_account.is_empty() {
+            "SELECT c.code, c.available_uses, c.disabled, c.for_account, c.created_by, c.created_at,
+                    COUNT(u.used_by) as use_count
+             FROM invite_codes c
+             LEFT JOIN invite_code_uses u ON c.code = u.code
+             GROUP BY c.code
+             ORDER BY c.created_at DESC"
+        } else {
+            "SELECT c.code, c.available_uses, c.disabled, c.for_account, c.created_by, c.created_at,
+                    COUNT(u.used_by) as use_count
+             FROM invite_codes c
+             LEFT JOIN invite_code_uses u ON c.code = u.code
+             WHERE c.for_account = ?
+             GROUP BY c.code
+             ORDER BY c.created_at DESC"
+        };
+
+        let mut stmt = conn.prepare(query)?;
+        let row_mapper = |row: &rusqlite::Row| {
+            Ok(InviteCodeEntry {
+                code: row.get(0)?,
+                available_uses: row.get(1)?,
+                disabled: row.get::<_, i32>(2)? != 0,
+                for_account: row.get(3)?,
+                created_by: row.get(4)?,
+                created_at: row.get(5)?,
+                uses: Vec::new(),
+                use_count: row.get(6)?,
+            })
+        };
+
+        let mut entries: Vec<InviteCodeEntry> = if for_account.is_empty() {
+            stmt.query_map([], row_mapper)?
+                .filter_map(std::result::Result::ok)
+                .collect()
+        } else {
+            stmt.query_map(params![for_account], row_mapper)?
+                .filter_map(std::result::Result::ok)
+                .collect()
+        };
+        drop(stmt);
+
+        // Populate uses for each code
+        for entry in &mut entries {
+            let mut use_stmt = conn.prepare(
+                "SELECT used_by, used_at FROM invite_code_uses WHERE code = ? ORDER BY used_at",
+            )?;
+            entry.uses = use_stmt
+                .query_map(params![entry.code], |row| {
+                    Ok(InviteCodeUse {
+                        used_by: row.get(0)?,
+                        used_at: row.get(1)?,
+                    })
+                })?
+                .filter_map(std::result::Result::ok)
+                .collect();
+        }
+
+        Ok(entries)
+    }
+
+    /// Disables an invite code.
+    ///
+    /// # Errors
+    /// Returns an error if the update fails.
+    pub fn disable_invite_code(&self, code: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        let rows = conn.execute(
+            "UPDATE invite_codes SET disabled = 1 WHERE code = ?",
+            params![code],
+        )?;
+        Ok(rows > 0)
+    }
+
+    // ── Multi-user account management ──────────────────────────────────
+
+    /// Creates a new account entry.
+    ///
+    /// # Errors
+    /// Returns an error if the DID or handle already exists.
+    pub fn create_account_entry(&self, entry: &AccountEntry) -> Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO accounts (did, handle, email, password_hash, signing_key_hex, recovery_key_hex, invite_code, email_confirmed, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                entry.did,
+                entry.handle,
+                entry.email,
+                entry.password_hash,
+                entry.signing_key_hex,
+                entry.recovery_key_hex,
+                entry.invite_code,
+                i32::from(entry.email_confirmed),
+                entry.status.as_str(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Looks up an account by DID.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn get_account_by_did(&self, did: &str) -> Result<Option<AccountEntry>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT did, handle, email, password_hash, signing_key_hex, recovery_key_hex, invite_code, email_confirmed, status, created_at, deactivated_at FROM accounts WHERE did = ?",
+        )?;
+
+        let result = stmt.query_row(params![did], AccountEntry::from_row);
+        match result {
+            Ok(entry) => Ok(Some(entry)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Looks up an account by handle.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn get_account_by_handle(&self, handle: &str) -> Result<Option<AccountEntry>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT did, handle, email, password_hash, signing_key_hex, recovery_key_hex, invite_code, email_confirmed, status, created_at, deactivated_at FROM accounts WHERE handle = ?",
+        )?;
+
+        let result = stmt.query_row(params![handle], AccountEntry::from_row);
+        match result {
+            Ok(entry) => Ok(Some(entry)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Looks up an account by DID or handle.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn get_account_by_identifier(&self, identifier: &str) -> Result<Option<AccountEntry>> {
+        if identifier.starts_with("did:") {
+            self.get_account_by_did(identifier)
+        } else {
+            self.get_account_by_handle(identifier)
+        }
+    }
+
+    /// Returns the total number of accounts.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn get_account_count(&self) -> Result<i64> {
+        let conn = self.conn.lock();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM accounts", [], |row| row.get(0))?;
+        Ok(count)
+    }
+
+    /// Lists all accounts, optionally filtered by status.
+    ///
+    /// # Errors
+    /// Returns an error if the query fails.
+    pub fn list_accounts(
+        &self,
+        status_filter: Option<AccountStatus>,
+        limit: i64,
+        cursor: Option<&str>,
+    ) -> Result<Vec<AccountEntry>> {
+        let conn = self.conn.lock();
+
+        let cols = "did, handle, email, password_hash, signing_key_hex, recovery_key_hex, invite_code, email_confirmed, status, created_at, deactivated_at";
+
+        let rows: Vec<AccountEntry> = match (&status_filter, cursor) {
+            (Some(s), Some(c)) => {
+                let q = format!(
+                    "SELECT {cols} FROM accounts WHERE status = ? AND did > ? ORDER BY did LIMIT ?"
+                );
+                let mut stmt = conn.prepare(&q)?;
+                let v: Vec<AccountEntry> = stmt
+                    .query_map(params![s.as_str(), c, limit], AccountEntry::from_row)?
+                    .filter_map(std::result::Result::ok)
+                    .collect();
+                v
+            }
+            (Some(s), None) => {
+                let q =
+                    format!("SELECT {cols} FROM accounts WHERE status = ? ORDER BY did LIMIT ?");
+                let mut stmt = conn.prepare(&q)?;
+                let v: Vec<AccountEntry> = stmt
+                    .query_map(params![s.as_str(), limit], AccountEntry::from_row)?
+                    .filter_map(std::result::Result::ok)
+                    .collect();
+                v
+            }
+            (None, Some(c)) => {
+                let q = format!("SELECT {cols} FROM accounts WHERE did > ? ORDER BY did LIMIT ?");
+                let mut stmt = conn.prepare(&q)?;
+                let v: Vec<AccountEntry> = stmt
+                    .query_map(params![c, limit], AccountEntry::from_row)?
+                    .filter_map(std::result::Result::ok)
+                    .collect();
+                v
+            }
+            (None, None) => {
+                let q = format!("SELECT {cols} FROM accounts ORDER BY did LIMIT ?");
+                let mut stmt = conn.prepare(&q)?;
+                let v: Vec<AccountEntry> = stmt
+                    .query_map(params![limit], AccountEntry::from_row)?
+                    .filter_map(std::result::Result::ok)
+                    .collect();
+                v
+            }
+        };
+
+        Ok(rows)
+    }
+
+    /// Updates an account's handle.
+    ///
+    /// # Errors
+    /// Returns an error if the DID doesn't exist or the handle is taken.
+    pub fn update_account_handle_entry(&self, did: &str, new_handle: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        let rows = conn.execute(
+            "UPDATE accounts SET handle = ? WHERE did = ?",
+            params![new_handle, did],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Updates an account's password hash.
+    ///
+    /// # Errors
+    /// Returns an error if the update fails.
+    pub fn update_account_password(&self, did: &str, new_password_hash: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        let rows = conn.execute(
+            "UPDATE accounts SET password_hash = ? WHERE did = ?",
+            params![new_password_hash, did],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Updates an account's email.
+    ///
+    /// # Errors
+    /// Returns an error if the update fails.
+    pub fn update_account_email(&self, did: &str, email: &str, confirmed: bool) -> Result<bool> {
+        let conn = self.conn.lock();
+        let rows = conn.execute(
+            "UPDATE accounts SET email = ?, email_confirmed = ? WHERE did = ?",
+            params![email, i32::from(confirmed), did],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Sets the email_confirmed flag for an account.
+    ///
+    /// # Errors
+    /// Returns an error if the update fails.
+    pub fn confirm_account_email(&self, did: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        let rows = conn.execute(
+            "UPDATE accounts SET email_confirmed = 1 WHERE did = ?",
+            params![did],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Updates an account's status.
+    ///
+    /// # Errors
+    /// Returns an error if the update fails.
+    pub fn update_account_status(&self, did: &str, status: AccountStatus) -> Result<bool> {
+        let conn = self.conn.lock();
+        let deactivated_at = if status == AccountStatus::Deactivated {
+            Some(chrono::Utc::now().to_rfc3339())
+        } else {
+            None
+        };
+        let rows = conn.execute(
+            "UPDATE accounts SET status = ?, deactivated_at = ? WHERE did = ?",
+            params![status.as_str(), deactivated_at, did],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Deletes an account entry.
+    ///
+    /// # Errors
+    /// Returns an error if the delete fails.
+    pub fn delete_account_entry(&self, did: &str) -> Result<bool> {
+        let conn = self.conn.lock();
+        let rows = conn.execute("DELETE FROM accounts WHERE did = ?", params![did])?;
+        Ok(rows > 0)
     }
 
     /// Checks if a used token is within the grace period.
@@ -2308,5 +2938,416 @@ mod tests {
         // Blocks should be gone
         let block = storage.get_block("bafytest").unwrap();
         assert!(block.is_none());
+    }
+
+    #[test]
+    fn test_invite_code_crud() {
+        let storage = SqliteStorage::in_memory().unwrap();
+
+        // Create a code
+        storage
+            .create_invite_code("test-abc-12345", 2, "", "admin")
+            .unwrap();
+
+        // Retrieve it
+        let code = storage.get_invite_code("test-abc-12345").unwrap().unwrap();
+        assert_eq!(code.code, "test-abc-12345");
+        assert_eq!(code.available_uses, 2);
+        assert!(!code.disabled);
+        assert_eq!(code.use_count, 0);
+
+        // Non-existent code returns None
+        assert!(storage.get_invite_code("nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_invite_code_use() {
+        let storage = SqliteStorage::in_memory().unwrap();
+
+        storage
+            .create_invite_code("test-use-code1", 2, "", "admin")
+            .unwrap();
+
+        // Use the code
+        assert!(storage
+            .use_invite_code("test-use-code1", "did:plc:user1")
+            .unwrap());
+
+        // Check use count
+        let code = storage.get_invite_code("test-use-code1").unwrap().unwrap();
+        assert_eq!(code.use_count, 1);
+
+        // Use again (should succeed, 2 uses available)
+        assert!(storage
+            .use_invite_code("test-use-code1", "did:plc:user2")
+            .unwrap());
+
+        // Third use should fail (only 2 uses allowed)
+        assert!(!storage
+            .use_invite_code("test-use-code1", "did:plc:user3")
+            .unwrap());
+    }
+
+    #[test]
+    fn test_invite_code_disable() {
+        let storage = SqliteStorage::in_memory().unwrap();
+
+        storage
+            .create_invite_code("test-dis-code1", 5, "", "admin")
+            .unwrap();
+
+        // Disable the code
+        assert!(storage.disable_invite_code("test-dis-code1").unwrap());
+
+        // Using disabled code should fail
+        assert!(!storage
+            .use_invite_code("test-dis-code1", "did:plc:user1")
+            .unwrap());
+    }
+
+    #[test]
+    fn test_invite_code_list() {
+        let storage = SqliteStorage::in_memory().unwrap();
+
+        storage
+            .create_invite_code("code-a", 1, "did:plc:alice", "admin")
+            .unwrap();
+        storage
+            .create_invite_code("code-b", 1, "did:plc:bob", "admin")
+            .unwrap();
+        storage
+            .create_invite_code("code-c", 1, "did:plc:alice", "admin")
+            .unwrap();
+
+        // List all
+        let all = storage.list_invite_codes("").unwrap();
+        assert_eq!(all.len(), 3);
+
+        // List for alice
+        let alice = storage.list_invite_codes("did:plc:alice").unwrap();
+        assert_eq!(alice.len(), 2);
+
+        // List for bob
+        let bob = storage.list_invite_codes("did:plc:bob").unwrap();
+        assert_eq!(bob.len(), 1);
+    }
+
+    #[test]
+    fn test_invite_code_invalid_returns_false() {
+        let storage = SqliteStorage::in_memory().unwrap();
+
+        // Using non-existent code should return false
+        assert!(!storage
+            .use_invite_code("nonexistent", "did:plc:user1")
+            .unwrap());
+    }
+
+    #[test]
+    fn test_account_entry_crud() {
+        let storage = SqliteStorage::in_memory().unwrap();
+
+        let entry = AccountEntry {
+            did: "did:plc:abc123".to_string(),
+            handle: "alice.test".to_string(),
+            email: Some("alice@example.com".to_string()),
+            password_hash: "$2b$12$testhash".to_string(),
+            signing_key_hex: Some("deadbeef".to_string()),
+            recovery_key_hex: Some("cafebabe".to_string()),
+            invite_code: Some("inv-123".to_string()),
+            email_confirmed: false,
+            status: AccountStatus::Active,
+            created_at: None,
+            deactivated_at: None,
+        };
+
+        // Create
+        storage.create_account_entry(&entry).unwrap();
+
+        // Get by DID
+        let found = storage
+            .get_account_by_did("did:plc:abc123")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.did, "did:plc:abc123");
+        assert_eq!(found.handle, "alice.test");
+        assert_eq!(found.email.as_deref(), Some("alice@example.com"));
+        assert!(!found.email_confirmed);
+        assert_eq!(found.status, AccountStatus::Active);
+
+        // Get by handle
+        let found = storage
+            .get_account_by_handle("alice.test")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.did, "did:plc:abc123");
+
+        // Get by identifier (DID)
+        let found = storage
+            .get_account_by_identifier("did:plc:abc123")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.handle, "alice.test");
+
+        // Get by identifier (handle)
+        let found = storage
+            .get_account_by_identifier("alice.test")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.did, "did:plc:abc123");
+    }
+
+    #[test]
+    fn test_account_not_found() {
+        let storage = SqliteStorage::in_memory().unwrap();
+
+        assert!(storage
+            .get_account_by_did("did:plc:nonexistent")
+            .unwrap()
+            .is_none());
+        assert!(storage
+            .get_account_by_handle("nobody.test")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn test_account_duplicate_did_rejected() {
+        let storage = SqliteStorage::in_memory().unwrap();
+
+        let entry = AccountEntry {
+            did: "did:plc:dup".to_string(),
+            handle: "user1.test".to_string(),
+            email: None,
+            password_hash: "hash".to_string(),
+            signing_key_hex: None,
+            recovery_key_hex: None,
+            invite_code: None,
+            email_confirmed: false,
+            status: AccountStatus::Active,
+            created_at: None,
+            deactivated_at: None,
+        };
+        storage.create_account_entry(&entry).unwrap();
+
+        let dup = AccountEntry {
+            did: "did:plc:dup".to_string(),
+            handle: "user2.test".to_string(),
+            ..entry
+        };
+        assert!(storage.create_account_entry(&dup).is_err());
+    }
+
+    #[test]
+    fn test_account_duplicate_handle_rejected() {
+        let storage = SqliteStorage::in_memory().unwrap();
+
+        let entry1 = AccountEntry {
+            did: "did:plc:one".to_string(),
+            handle: "same.test".to_string(),
+            email: None,
+            password_hash: "hash".to_string(),
+            signing_key_hex: None,
+            recovery_key_hex: None,
+            invite_code: None,
+            email_confirmed: false,
+            status: AccountStatus::Active,
+            created_at: None,
+            deactivated_at: None,
+        };
+        storage.create_account_entry(&entry1).unwrap();
+
+        let entry2 = AccountEntry {
+            did: "did:plc:two".to_string(),
+            handle: "same.test".to_string(),
+            email: None,
+            password_hash: "hash".to_string(),
+            signing_key_hex: None,
+            recovery_key_hex: None,
+            invite_code: None,
+            email_confirmed: false,
+            status: AccountStatus::Active,
+            created_at: None,
+            deactivated_at: None,
+        };
+        assert!(storage.create_account_entry(&entry2).is_err());
+    }
+
+    #[test]
+    fn test_account_update_handle() {
+        let storage = SqliteStorage::in_memory().unwrap();
+
+        let entry = AccountEntry {
+            did: "did:plc:upd".to_string(),
+            handle: "old.test".to_string(),
+            email: None,
+            password_hash: "hash".to_string(),
+            signing_key_hex: None,
+            recovery_key_hex: None,
+            invite_code: None,
+            email_confirmed: false,
+            status: AccountStatus::Active,
+            created_at: None,
+            deactivated_at: None,
+        };
+        storage.create_account_entry(&entry).unwrap();
+
+        assert!(storage
+            .update_account_handle_entry("did:plc:upd", "new.test")
+            .unwrap());
+
+        let found = storage.get_account_by_did("did:plc:upd").unwrap().unwrap();
+        assert_eq!(found.handle, "new.test");
+
+        // Old handle should no longer find the account
+        assert!(storage.get_account_by_handle("old.test").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_account_update_status() {
+        let storage = SqliteStorage::in_memory().unwrap();
+
+        let entry = AccountEntry {
+            did: "did:plc:status".to_string(),
+            handle: "status.test".to_string(),
+            email: None,
+            password_hash: "hash".to_string(),
+            signing_key_hex: None,
+            recovery_key_hex: None,
+            invite_code: None,
+            email_confirmed: false,
+            status: AccountStatus::Active,
+            created_at: None,
+            deactivated_at: None,
+        };
+        storage.create_account_entry(&entry).unwrap();
+
+        storage
+            .update_account_status("did:plc:status", AccountStatus::Suspended)
+            .unwrap();
+
+        let found = storage
+            .get_account_by_did("did:plc:status")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.status, AccountStatus::Suspended);
+    }
+
+    #[test]
+    fn test_account_confirm_email() {
+        let storage = SqliteStorage::in_memory().unwrap();
+
+        let entry = AccountEntry {
+            did: "did:plc:email".to_string(),
+            handle: "email.test".to_string(),
+            email: Some("test@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            signing_key_hex: None,
+            recovery_key_hex: None,
+            invite_code: None,
+            email_confirmed: false,
+            status: AccountStatus::Active,
+            created_at: None,
+            deactivated_at: None,
+        };
+        storage.create_account_entry(&entry).unwrap();
+
+        assert!(
+            !storage
+                .get_account_by_did("did:plc:email")
+                .unwrap()
+                .unwrap()
+                .email_confirmed
+        );
+
+        storage.confirm_account_email("did:plc:email").unwrap();
+
+        assert!(
+            storage
+                .get_account_by_did("did:plc:email")
+                .unwrap()
+                .unwrap()
+                .email_confirmed
+        );
+    }
+
+    #[test]
+    fn test_account_list_and_count() {
+        let storage = SqliteStorage::in_memory().unwrap();
+
+        for i in 0..5 {
+            let entry = AccountEntry {
+                did: format!("did:plc:user{i}"),
+                handle: format!("user{i}.test"),
+                email: None,
+                password_hash: "hash".to_string(),
+                signing_key_hex: None,
+                recovery_key_hex: None,
+                invite_code: None,
+                email_confirmed: false,
+                status: if i < 3 {
+                    AccountStatus::Active
+                } else {
+                    AccountStatus::Suspended
+                },
+                created_at: None,
+                deactivated_at: None,
+            };
+            storage.create_account_entry(&entry).unwrap();
+        }
+
+        assert_eq!(storage.get_account_count().unwrap(), 5);
+
+        // List all
+        let all = storage.list_accounts(None, 100, None).unwrap();
+        assert_eq!(all.len(), 5);
+
+        // List only active
+        let active = storage
+            .list_accounts(Some(AccountStatus::Active), 100, None)
+            .unwrap();
+        assert_eq!(active.len(), 3);
+
+        // List only suspended
+        let suspended = storage
+            .list_accounts(Some(AccountStatus::Suspended), 100, None)
+            .unwrap();
+        assert_eq!(suspended.len(), 2);
+
+        // List with limit
+        let limited = storage.list_accounts(None, 2, None).unwrap();
+        assert_eq!(limited.len(), 2);
+
+        // List with cursor (pagination)
+        let page2 = storage
+            .list_accounts(None, 2, Some(&limited[1].did))
+            .unwrap();
+        assert_eq!(page2.len(), 2);
+        assert_ne!(page2[0].did, limited[1].did);
+    }
+
+    #[test]
+    fn test_account_delete() {
+        let storage = SqliteStorage::in_memory().unwrap();
+
+        let entry = AccountEntry {
+            did: "did:plc:del".to_string(),
+            handle: "del.test".to_string(),
+            email: None,
+            password_hash: "hash".to_string(),
+            signing_key_hex: None,
+            recovery_key_hex: None,
+            invite_code: None,
+            email_confirmed: false,
+            status: AccountStatus::Active,
+            created_at: None,
+            deactivated_at: None,
+        };
+        storage.create_account_entry(&entry).unwrap();
+
+        assert!(storage.delete_account_entry("did:plc:del").unwrap());
+        assert!(storage.get_account_by_did("did:plc:del").unwrap().is_none());
+
+        // Double delete returns false
+        assert!(!storage.delete_account_entry("did:plc:del").unwrap());
     }
 }

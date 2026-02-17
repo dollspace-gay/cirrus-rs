@@ -57,6 +57,9 @@ anyhow.workspace = true
 # HTTP client
 reqwest.workspace = true
 
+# S3-compatible blob storage
+rust-s3.workspace = true
+
 # DNS resolution
 trust-dns-resolver.workspace = true
 

@@ -190,6 +190,150 @@ impl BlobStore for DiskBlobStore {
     }
 }
 
+/// S3-compatible blob store for cloud storage.
+///
+/// Supports AWS S3, Cloudflare R2, Backblaze B2, MinIO, and other
+/// S3-compatible object storage services. Uses 2-character CID prefix
+/// sharding for key organization.
+pub struct S3BlobStore {
+    bucket: Box<s3::Bucket>,
+    prefix: String,
+}
+
+impl S3BlobStore {
+    /// Creates a new S3 blob store.
+    ///
+    /// # Arguments
+    /// * `bucket_name` - The S3 bucket name
+    /// * `region` - AWS region name (e.g., "us-east-1") or arbitrary string for custom endpoints
+    /// * `endpoint` - Optional custom endpoint URL for S3-compatible services (R2, MinIO, etc.)
+    /// * `access_key` - S3 access key ID
+    /// * `secret_key` - S3 secret access key
+    /// * `prefix` - Optional path prefix for blob keys (defaults to "blobs")
+    ///
+    /// # Errors
+    /// Returns an error if the bucket configuration is invalid.
+    pub fn new(
+        bucket_name: &str,
+        region: &str,
+        endpoint: Option<&str>,
+        access_key: &str,
+        secret_key: &str,
+        prefix: Option<&str>,
+    ) -> Result<Self> {
+        let s3_region = if let Some(ep) = endpoint {
+            s3::Region::Custom {
+                region: region.to_string(),
+                endpoint: ep.to_string(),
+            }
+        } else {
+            region
+                .parse::<s3::Region>()
+                .map_err(|e| PdsError::Blob(format!("invalid S3 region: {e}")))?
+        };
+
+        let credentials =
+            s3::creds::Credentials::new(Some(access_key), Some(secret_key), None, None, None)
+                .map_err(|e| PdsError::Blob(format!("invalid S3 credentials: {e}")))?;
+
+        let bucket = s3::Bucket::new(bucket_name, s3_region, credentials)
+            .map_err(|e| PdsError::Blob(format!("failed to create S3 bucket handle: {e}")))?;
+
+        Ok(Self {
+            bucket,
+            prefix: prefix.unwrap_or("blobs").to_string(),
+        })
+    }
+
+    fn blob_key(&self, cid: &str) -> String {
+        let shard = &cid[..cid.len().min(2)];
+        format!("{}/{shard}/{cid}", self.prefix)
+    }
+}
+
+impl BlobStore for S3BlobStore {
+    fn put_blob(&self, data: &[u8], mime_type: &str) -> Result<BlobRef> {
+        if data.len() > MAX_BLOB_SIZE {
+            return Err(PdsError::Blob(format!(
+                "blob too large: {} bytes (max: {MAX_BLOB_SIZE})",
+                data.len()
+            )));
+        }
+
+        let cid = cirrus_common::cid::Cid::for_raw(data);
+        let cid_str = cid.to_string();
+        let key = self.blob_key(&cid_str);
+
+        let rt = tokio::runtime::Handle::current();
+        tokio::task::block_in_place(|| {
+            rt.block_on(async {
+                self.bucket
+                    .put_object_with_content_type(&key, data, mime_type)
+                    .await
+                    .map_err(|e| PdsError::Blob(format!("S3 put failed: {e}")))?;
+                Ok::<_, PdsError>(())
+            })
+        })?;
+
+        Ok(BlobRef::new(&cid_str, mime_type, data.len() as u64))
+    }
+
+    fn get_blob(&self, cid: &str) -> Result<Option<Vec<u8>>> {
+        let key = self.blob_key(cid);
+
+        let rt = tokio::runtime::Handle::current();
+        tokio::task::block_in_place(|| {
+            rt.block_on(async {
+                match self.bucket.get_object(&key).await {
+                    Ok(resp) if resp.status_code() == 200 => Ok(Some(resp.to_vec())),
+                    Ok(resp) if resp.status_code() == 404 => Ok(None),
+                    Ok(resp) => Err(PdsError::Blob(format!(
+                        "S3 get returned status {}",
+                        resp.status_code()
+                    ))),
+                    Err(e) => {
+                        let err_str = e.to_string();
+                        if err_str.contains("404") || err_str.contains("NoSuchKey") {
+                            Ok(None)
+                        } else {
+                            Err(PdsError::Blob(format!("S3 get failed: {e}")))
+                        }
+                    }
+                }
+            })
+        })
+    }
+
+    fn has_blob(&self, cid: &str) -> Result<bool> {
+        let key = self.blob_key(cid);
+
+        let rt = tokio::runtime::Handle::current();
+        tokio::task::block_in_place(|| {
+            rt.block_on(async {
+                self.bucket
+                    .object_exists(&key)
+                    .await
+                    .map_err(|e| PdsError::Blob(format!("S3 existence check failed: {e}")))
+            })
+        })
+    }
+
+    fn delete_blob(&self, cid: &str) -> Result<()> {
+        let key = self.blob_key(cid);
+
+        let rt = tokio::runtime::Handle::current();
+        tokio::task::block_in_place(|| {
+            rt.block_on(async {
+                self.bucket
+                    .delete_object(&key)
+                    .await
+                    .map_err(|e| PdsError::Blob(format!("S3 delete failed: {e}")))?;
+                Ok(())
+            })
+        })
+    }
+}
+
 /// In-memory blob store for testing.
 #[derive(Default)]
 pub struct MemoryBlobStore {
@@ -355,6 +499,93 @@ mod tests {
 
         let cids = extract_blob_cids(&record);
         assert_eq!(cids, vec!["bafyavatar"]);
+    }
+
+    #[test]
+    fn test_s3_blob_store_key_generation() {
+        // Test the blob_key method produces correct sharded paths
+        let store = S3BlobStore {
+            bucket: s3::Bucket::new(
+                "test-bucket",
+                s3::Region::Custom {
+                    region: "us-east-1".to_string(),
+                    endpoint: "http://localhost:9000".to_string(),
+                },
+                s3::creds::Credentials::new(Some("test"), Some("test"), None, None, None).unwrap(),
+            )
+            .unwrap(),
+            prefix: "blobs".to_string(),
+        };
+
+        assert_eq!(store.blob_key("bafyabc123"), "blobs/ba/bafyabc123");
+        assert_eq!(store.blob_key("zz"), "blobs/zz/zz");
+        assert_eq!(store.blob_key("a"), "blobs/a/a");
+    }
+
+    #[test]
+    fn test_s3_blob_store_custom_prefix() {
+        let store = S3BlobStore {
+            bucket: s3::Bucket::new(
+                "test-bucket",
+                s3::Region::Custom {
+                    region: "auto".to_string(),
+                    endpoint: "http://localhost:9000".to_string(),
+                },
+                s3::creds::Credentials::new(Some("test"), Some("test"), None, None, None).unwrap(),
+            )
+            .unwrap(),
+            prefix: "my-pds/data".to_string(),
+        };
+
+        assert_eq!(store.blob_key("bafytest"), "my-pds/data/ba/bafytest");
+    }
+
+    #[test]
+    fn test_s3_blob_store_constructor() {
+        // Test custom endpoint (R2/MinIO style)
+        let store = S3BlobStore::new(
+            "my-bucket",
+            "auto",
+            Some("http://localhost:9000"),
+            "access-key",
+            "secret-key",
+            Some("custom-prefix"),
+        );
+        assert!(store.is_ok());
+
+        // Test default prefix
+        let store = S3BlobStore::new(
+            "my-bucket",
+            "auto",
+            Some("http://localhost:9000"),
+            "access-key",
+            "secret-key",
+            None,
+        );
+        assert!(store.is_ok());
+        assert_eq!(store.unwrap().prefix, "blobs");
+    }
+
+    #[test]
+    fn test_s3_blob_store_max_size() {
+        let store = S3BlobStore::new(
+            "test-bucket",
+            "auto",
+            Some("http://localhost:9000"),
+            "test",
+            "test",
+            None,
+        )
+        .unwrap();
+
+        let oversized = vec![0u8; MAX_BLOB_SIZE + 1];
+        // put_blob requires a tokio runtime; we only test the size check
+        // which happens before any async call
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(async {
+            tokio::task::block_in_place(|| store.put_blob(&oversized, "application/octet-stream"))
+        });
+        assert!(result.is_err());
     }
 
     #[test]
