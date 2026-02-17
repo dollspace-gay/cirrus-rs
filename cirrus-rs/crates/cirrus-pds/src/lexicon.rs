@@ -494,8 +494,8 @@ impl LexiconStore {
     /// # Errors
     /// Returns an error if parsing fails.
     pub fn load_json(&mut self, json: &str) -> Result<()> {
-        let doc: LexiconDoc =
-            serde_json::from_str(json).map_err(|e| PdsError::Lexicon(format!("parse error: {e}")))?;
+        let doc: LexiconDoc = serde_json::from_str(json)
+            .map_err(|e| PdsError::Lexicon(format!("parse error: {e}")))?;
 
         if doc.lexicon != LEXICON_VERSION {
             return Err(PdsError::Lexicon(format!(
@@ -517,7 +517,9 @@ impl LexiconStore {
     /// Gets a definition from a lexicon.
     #[must_use]
     pub fn get_def(&self, nsid: &str, def_name: &str) -> Option<&LexiconDef> {
-        self.lexicons.get(nsid).and_then(|doc| doc.defs.get(def_name))
+        self.lexicons
+            .get(nsid)
+            .and_then(|doc| doc.defs.get(def_name))
     }
 
     /// Gets the main definition from a lexicon.
@@ -548,11 +550,7 @@ impl LexiconStore {
     ///
     /// # Errors
     /// Returns an error if validation fails.
-    pub fn validate_record(
-        &self,
-        collection: &str,
-        value: &serde_json::Value,
-    ) -> Result<()> {
+    pub fn validate_record(&self, collection: &str, value: &serde_json::Value) -> Result<()> {
         // Permissive: skip validation for unknown collections (fail-open)
         let def = match self.get_main(collection) {
             Some(d) => d,
@@ -568,15 +566,17 @@ impl LexiconStore {
     }
 
     fn validate_object(&self, value: &serde_json::Value, schema: &ObjectSchema) -> Result<()> {
-        let obj = value.as_object().ok_or_else(|| {
-            PdsError::Lexicon("expected object".into())
-        })?;
+        let obj = value
+            .as_object()
+            .ok_or_else(|| PdsError::Lexicon("expected object".into()))?;
 
         // Check required properties
         if let Some(required) = &schema.required {
             for prop in required {
                 if !obj.contains_key(prop) {
-                    return Err(PdsError::Lexicon(format!("missing required property: {prop}")));
+                    return Err(PdsError::Lexicon(format!(
+                        "missing required property: {prop}"
+                    )));
                 }
             }
         }
@@ -625,39 +625,31 @@ impl LexiconStore {
     }
 
     fn validate_string(value: &serde_json::Value, schema: &StringProp) -> Result<()> {
-        let s = value.as_str().ok_or_else(|| {
-            PdsError::Lexicon("expected string".into())
-        })?;
+        let s = value
+            .as_str()
+            .ok_or_else(|| PdsError::Lexicon("expected string".into()))?;
 
         if let Some(min) = schema.min_length {
             if s.len() < min as usize {
-                return Err(PdsError::Lexicon(format!(
-                    "string too short (min: {min})"
-                )));
+                return Err(PdsError::Lexicon(format!("string too short (min: {min})")));
             }
         }
 
         if let Some(max) = schema.max_length {
             if s.len() > max as usize {
-                return Err(PdsError::Lexicon(format!(
-                    "string too long (max: {max})"
-                )));
+                return Err(PdsError::Lexicon(format!("string too long (max: {max})")));
             }
         }
 
         if let Some(enum_values) = &schema.enum_values {
             if !enum_values.contains(&s.to_string()) {
-                return Err(PdsError::Lexicon(format!(
-                    "invalid enum value: {s}"
-                )));
+                return Err(PdsError::Lexicon(format!("invalid enum value: {s}")));
             }
         }
 
         if let Some(const_value) = &schema.const_value {
             if s != const_value {
-                return Err(PdsError::Lexicon(format!(
-                    "expected const: {const_value}"
-                )));
+                return Err(PdsError::Lexicon(format!("expected const: {const_value}")));
             }
         }
 
@@ -670,31 +662,25 @@ impl LexiconStore {
     }
 
     fn validate_integer(value: &serde_json::Value, schema: &IntegerProp) -> Result<()> {
-        let n = value.as_i64().ok_or_else(|| {
-            PdsError::Lexicon("expected integer".into())
-        })?;
+        let n = value
+            .as_i64()
+            .ok_or_else(|| PdsError::Lexicon("expected integer".into()))?;
 
         if let Some(min) = schema.minimum {
             if n < min {
-                return Err(PdsError::Lexicon(format!(
-                    "integer too small (min: {min})"
-                )));
+                return Err(PdsError::Lexicon(format!("integer too small (min: {min})")));
             }
         }
 
         if let Some(max) = schema.maximum {
             if n > max {
-                return Err(PdsError::Lexicon(format!(
-                    "integer too large (max: {max})"
-                )));
+                return Err(PdsError::Lexicon(format!("integer too large (max: {max})")));
             }
         }
 
         if let Some(enum_values) = &schema.enum_values {
             if !enum_values.contains(&n) {
-                return Err(PdsError::Lexicon(format!(
-                    "invalid enum value: {n}"
-                )));
+                return Err(PdsError::Lexicon(format!("invalid enum value: {n}")));
             }
         }
 
@@ -702,23 +688,19 @@ impl LexiconStore {
     }
 
     fn validate_array(&self, value: &serde_json::Value, schema: &ArrayProp) -> Result<()> {
-        let arr = value.as_array().ok_or_else(|| {
-            PdsError::Lexicon("expected array".into())
-        })?;
+        let arr = value
+            .as_array()
+            .ok_or_else(|| PdsError::Lexicon("expected array".into()))?;
 
         if let Some(min) = schema.min_length {
             if arr.len() < min as usize {
-                return Err(PdsError::Lexicon(format!(
-                    "array too short (min: {min})"
-                )));
+                return Err(PdsError::Lexicon(format!("array too short (min: {min})")));
             }
         }
 
         if let Some(max) = schema.max_length {
             if arr.len() > max as usize {
-                return Err(PdsError::Lexicon(format!(
-                    "array too long (max: {max})"
-                )));
+                return Err(PdsError::Lexicon(format!("array too long (max: {max})")));
             }
         }
 
@@ -857,7 +839,9 @@ mod tests {
         let invalid = serde_json::json!({
             "text": "Hello world!"
         });
-        assert!(store.validate_record("app.bsky.feed.post", &invalid).is_err());
+        assert!(store
+            .validate_record("app.bsky.feed.post", &invalid)
+            .is_err());
     }
 
     #[test]
@@ -902,7 +886,11 @@ mod tests {
     #[test]
     fn test_format_validation() {
         // Valid formats
-        assert!(LexiconStore::validate_format("at://did:plc:test/app.bsky.feed.post/123", "at-uri").is_ok());
+        assert!(LexiconStore::validate_format(
+            "at://did:plc:test/app.bsky.feed.post/123",
+            "at-uri"
+        )
+        .is_ok());
         assert!(LexiconStore::validate_format("did:plc:test", "did").is_ok());
         assert!(LexiconStore::validate_format("user.bsky.social", "handle").is_ok());
         assert!(LexiconStore::validate_format("https://example.com", "uri").is_ok());

@@ -39,8 +39,7 @@ impl Keypair {
     /// # Errors
     /// Returns an error if the hex string or key is invalid.
     pub fn from_hex(hex: &str) -> Result<Self, Error> {
-        let bytes = hex::decode(hex)
-            .map_err(|e| Error::Crypto(format!("invalid hex: {e}")))?;
+        let bytes = hex::decode(hex).map_err(|e| Error::Crypto(format!("invalid hex: {e}")))?;
         Self::from_bytes(&bytes)
     }
 
@@ -111,8 +110,8 @@ impl PublicKey {
     /// Returns an error if the multibase or key is invalid.
     pub fn from_multibase(s: &str) -> Result<Self, Error> {
         // Multikey format: multicodec prefix + key bytes
-        let (_, bytes) = multibase::decode(s)
-            .map_err(|e| Error::Crypto(format!("invalid multibase: {e}")))?;
+        let (_, bytes) =
+            multibase::decode(s).map_err(|e| Error::Crypto(format!("invalid multibase: {e}")))?;
 
         // Skip the multicodec prefix (0xe7 0x01 for secp256k1-pub)
         if bytes.len() < 2 {
@@ -131,7 +130,10 @@ impl PublicKey {
     /// Returns the compressed public key bytes (33 bytes).
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
-        self.verifying_key.to_encoded_point(true).as_bytes().to_vec()
+        self.verifying_key
+            .to_encoded_point(true)
+            .as_bytes()
+            .to_vec()
     }
 
     /// Returns the public key as a multibase-encoded string.

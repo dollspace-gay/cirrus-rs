@@ -14,8 +14,7 @@ use crate::error::Error;
 /// Returns an error if serialization fails.
 pub fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
     let mut buf = Vec::new();
-    ciborium::into_writer(value, &mut buf)
-        .map_err(|e| Error::CborEncode(e.to_string()))?;
+    ciborium::into_writer(value, &mut buf).map_err(|e| Error::CborEncode(e.to_string()))?;
     Ok(buf)
 }
 
@@ -32,8 +31,7 @@ pub fn encode_bytes<T: Serialize>(value: &T) -> Result<Bytes, Error> {
 /// # Errors
 /// Returns an error if deserialization fails.
 pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Error> {
-    ciborium::from_reader(bytes)
-        .map_err(|e| Error::CborDecode(e.to_string()))
+    ciborium::from_reader(bytes).map_err(|e| Error::CborDecode(e.to_string()))
 }
 
 /// Decodes CBOR from a reader.
@@ -41,8 +39,7 @@ pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, Error> {
 /// # Errors
 /// Returns an error if deserialization fails.
 pub fn decode_reader<T: DeserializeOwned, R: std::io::Read>(reader: R) -> Result<T, Error> {
-    ciborium::from_reader(reader)
-        .map_err(|e| Error::CborDecode(e.to_string()))
+    ciborium::from_reader(reader).map_err(|e| Error::CborDecode(e.to_string()))
 }
 
 #[cfg(test)]

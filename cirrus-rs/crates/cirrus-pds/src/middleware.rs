@@ -88,8 +88,8 @@ fn extract_auth(parts: &Parts, state: &AppState) -> Result<AuthContext, AuthErro
         .ok_or_else(|| AuthError::unauthorized("invalid authorization format"))?;
 
     // Check the algorithm to determine auth type
-    let alg = get_algorithm(token)
-        .map_err(|e| AuthError::unauthorized(format!("invalid token: {e}")))?;
+    let alg =
+        get_algorithm(token).map_err(|e| AuthError::unauthorized(format!("invalid token: {e}")))?;
 
     match alg.as_str() {
         "HS256" => {
@@ -159,14 +159,8 @@ fn extract_dpop_auth(
     let uri = format!("https://{}{}", state.hostname, parts.uri.path());
 
     // Verify the DPoP proof (checks signature, method, URI, access token hash, timing)
-    let jwk = cirrus_oauth::dpop::verify_proof(
-        dpop_proof,
-        method,
-        &uri,
-        Some(access_token),
-        None,
-    )
-    .map_err(|e| AuthError::unauthorized(format!("DPoP proof invalid: {e}")))?;
+    let jwk = cirrus_oauth::dpop::verify_proof(dpop_proof, method, &uri, Some(access_token), None)
+        .map_err(|e| AuthError::unauthorized(format!("DPoP proof invalid: {e}")))?;
 
     // Compute the JWK thumbprint from the proof's public key
     let thumbprint = cirrus_oauth::dpop::compute_jwk_thumbprint(&jwk);
@@ -188,9 +182,7 @@ fn extract_dpop_auth(
             return Err(AuthError::unauthorized("DPoP key binding mismatch"));
         }
         None => {
-            return Err(AuthError::unauthorized(
-                "token not bound to a DPoP key",
-            ));
+            return Err(AuthError::unauthorized("token not bound to a DPoP key"));
         }
     }
 
@@ -206,10 +198,7 @@ fn extract_dpop_auth(
 /// Used by `refresh_session` which needs to accept refresh-scoped tokens.
 /// All other endpoints should use `RequireAuth` or `RequireAdmin` extractors
 /// which reject refresh tokens.
-pub fn extract_auth_for_refresh(
-    parts: &Parts,
-    state: &AppState,
-) -> Result<AuthContext, AuthError> {
+pub fn extract_auth_for_refresh(parts: &Parts, state: &AppState) -> Result<AuthContext, AuthError> {
     extract_auth(parts, state)
 }
 
@@ -291,8 +280,8 @@ mod tests {
 
     /// Helper to build a minimal `AppState` with OAuth storage for tests.
     fn test_state_with_oauth() -> AppState {
-        let storage = crate::storage::SqliteStorage::in_memory()
-            .expect("failed to create test storage");
+        let storage =
+            crate::storage::SqliteStorage::in_memory().expect("failed to create test storage");
         let oauth_storage = crate::oauth_storage::OAuthSqliteStorage::in_memory()
             .expect("failed to create test oauth storage");
 
@@ -300,10 +289,10 @@ mod tests {
             storage,
             lexicons: crate::lexicon::LexiconStore::new(),
             jwt_secret: b"test-secret-key-for-jwt".to_vec(),
-            password_hash: String::new(),
+            password_hash: parking_lot::RwLock::new(String::new()),
             hostname: "pds.example.com".to_string(),
             did: "did:plc:testuser".to_string(),
-            handle: "test.example.com".to_string(),
+            handle: parking_lot::RwLock::new("test.example.com".to_string()),
             public_key_multibase: String::new(),
             firehose: crate::sequencer::Firehose::new(),
             blob_store: Box::new(crate::blobs::MemoryBlobStore::new()),
@@ -311,14 +300,14 @@ mod tests {
             rate_limits: None,
             oauth_storage: Some(oauth_storage),
             signing_key: None,
+            crawlers: None,
+            appview: None,
         }
     }
 
     /// Helper to build request Parts with given headers.
     fn make_parts(method: &str, uri: &str, headers: Vec<(&str, &str)>) -> Parts {
-        let mut builder = axum::http::Request::builder()
-            .method(method)
-            .uri(uri);
+        let mut builder = axum::http::Request::builder().method(method).uri(uri);
         for (key, value) in headers {
             builder = builder.header(key, value);
         }
@@ -367,7 +356,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dpop_auth_full_flow() {
-        use cirrus_oauth::dpop::{DpopKeyPair, compute_jwk_thumbprint};
+        use cirrus_oauth::dpop::{compute_jwk_thumbprint, DpopKeyPair};
         use cirrus_oauth::storage::OAuthStorage;
         use cirrus_oauth::tokens::TokenData;
 
@@ -479,7 +468,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dpop_auth_revoked_token() {
-        use cirrus_oauth::dpop::{DpopKeyPair, compute_jwk_thumbprint};
+        use cirrus_oauth::dpop::{compute_jwk_thumbprint, DpopKeyPair};
         use cirrus_oauth::storage::OAuthStorage;
         use cirrus_oauth::tokens::TokenData;
 

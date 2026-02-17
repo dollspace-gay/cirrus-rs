@@ -219,7 +219,9 @@ impl<R: Read> CarReader<R> {
 
         // Read block data
         let mut block_bytes = vec![0u8; block_len as usize];
-        self.reader.read_exact(&mut block_bytes).map_err(Error::Io)?;
+        self.reader
+            .read_exact(&mut block_bytes)
+            .map_err(Error::Io)?;
 
         // Parse CID from the beginning
         let (cid, cid_len) = Cid::from_bytes_with_len(&block_bytes)?;

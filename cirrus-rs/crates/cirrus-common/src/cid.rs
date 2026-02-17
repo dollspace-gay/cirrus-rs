@@ -127,7 +127,9 @@ impl Cid {
         pos += 1;
 
         if version != CID_VERSION {
-            return Err(Error::InvalidCid(format!("unsupported CID version: {version}")));
+            return Err(Error::InvalidCid(format!(
+                "unsupported CID version: {version}"
+            )));
         }
 
         // Codec (varint)

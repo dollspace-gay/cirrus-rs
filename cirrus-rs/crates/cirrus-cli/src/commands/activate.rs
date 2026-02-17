@@ -13,7 +13,10 @@ pub async fn run() -> Result<()> {
     // 2. Call the activation endpoint
     // 3. Update the account status
 
-    println!("{}", style("Account activated successfully!").bold().green());
+    println!(
+        "{}",
+        style("Account activated successfully!").bold().green()
+    );
 
     Ok(())
 }

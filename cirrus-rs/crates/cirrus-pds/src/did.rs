@@ -257,10 +257,7 @@ mod tests {
         assert_eq!(doc.also_known_as, vec!["at://user.example.com"]);
         assert_eq!(doc.verification_method.len(), 1);
         assert_eq!(doc.service.len(), 1);
-        assert_eq!(
-            doc.service[0].service_type,
-            "AtprotoPersonalDataServer"
-        );
+        assert_eq!(doc.service[0].service_type, "AtprotoPersonalDataServer");
     }
 
     #[test]

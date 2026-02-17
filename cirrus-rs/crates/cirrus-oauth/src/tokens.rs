@@ -187,7 +187,9 @@ pub fn extract_bearer_token(auth_header: &str) -> Result<&str> {
     auth_header
         .strip_prefix("Bearer ")
         .or_else(|| auth_header.strip_prefix("DPoP "))
-        .ok_or_else(|| crate::error::OAuthError::InvalidRequest("invalid Authorization header".into()))
+        .ok_or_else(|| {
+            crate::error::OAuthError::InvalidRequest("invalid Authorization header".into())
+        })
 }
 
 #[cfg(test)]
@@ -224,14 +226,8 @@ mod tests {
 
     #[test]
     fn test_extract_bearer_token() {
-        assert_eq!(
-            extract_bearer_token("Bearer abc123").unwrap(),
-            "abc123"
-        );
-        assert_eq!(
-            extract_bearer_token("DPoP xyz789").unwrap(),
-            "xyz789"
-        );
+        assert_eq!(extract_bearer_token("Bearer abc123").unwrap(), "abc123");
+        assert_eq!(extract_bearer_token("DPoP xyz789").unwrap(), "xyz789");
         assert!(extract_bearer_token("Basic abc").is_err());
     }
 }

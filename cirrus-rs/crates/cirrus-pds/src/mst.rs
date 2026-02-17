@@ -109,11 +109,7 @@ pub fn build(entries: &[(String, Cid)]) -> MstResult {
 }
 
 /// Recursively builds the MST, returning the node CID.
-fn build_recursive(
-    entries: &[KeyEntry],
-    layer: usize,
-    blocks: &mut Vec<(Vec<u8>, Cid)>,
-) -> Cid {
+fn build_recursive(entries: &[KeyEntry], layer: usize, blocks: &mut Vec<(Vec<u8>, Cid)>) -> Cid {
     if entries.is_empty() {
         // Empty subtree — encode an empty node
         let node_bytes = encode_node(None, &[]);

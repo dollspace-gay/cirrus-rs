@@ -10,9 +10,7 @@ use crate::storage::ClientMetadata;
 pub async fn resolve_client(client_id: &str) -> Result<ClientMetadata> {
     // Validate it's a DID
     if !client_id.starts_with("did:") {
-        return Err(OAuthError::InvalidClient(
-            "client_id must be a DID".into(),
-        ));
+        return Err(OAuthError::InvalidClient("client_id must be a DID".into()));
     }
 
     // Resolve DID document
@@ -63,12 +61,10 @@ fn extract_client_metadata(client_id: &str, did_doc: &serde_json::Value) -> Resu
     // Look for AtprotoOAuthClient service
     let services = did_doc["service"].as_array();
 
-    let oauth_service = services
-        .and_then(|s| {
-            s.iter().find(|svc| {
-                svc["type"].as_str() == Some("AtprotoOAuthClient")
-            })
-        });
+    let oauth_service = services.and_then(|s| {
+        s.iter()
+            .find(|svc| svc["type"].as_str() == Some("AtprotoOAuthClient"))
+    });
 
     // Extract redirect URIs from service endpoint or alsoKnownAs
     let redirect_uris = oauth_service

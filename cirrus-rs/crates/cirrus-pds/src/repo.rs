@@ -138,10 +138,7 @@ pub fn validate_collection(collection: &str) -> crate::error::Result<()> {
                 "collection has empty segment".into(),
             ));
         }
-        if !seg
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        {
+        if !seg.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
             return Err(crate::error::PdsError::InvalidRecord(
                 "collection segment contains invalid characters".into(),
             ));

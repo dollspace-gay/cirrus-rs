@@ -101,7 +101,9 @@ impl AtUri {
 
             // Rkey validation is lenient - just check it's not empty if present
             if path_parts.len() > 1 && path_parts[1].is_empty() {
-                return Err(Error::InvalidAtUri("rkey cannot be empty if present".into()));
+                return Err(Error::InvalidAtUri(
+                    "rkey cannot be empty if present".into(),
+                ));
             }
         }
 

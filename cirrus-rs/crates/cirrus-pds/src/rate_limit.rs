@@ -73,9 +73,7 @@ impl Default for RateLimitState {
 /// # Errors
 /// Returns `PdsError::RateLimited` if the rate limit is exceeded.
 pub fn check_rate_limit(limiter: &KeyedLimiter, ip: IpAddr) -> crate::error::Result<()> {
-    limiter
-        .check_key(&ip)
-        .map_err(|_| PdsError::RateLimited)
+    limiter.check_key(&ip).map_err(|_| PdsError::RateLimited)
 }
 
 fn create_keyed_limiter(rps: u32, burst: u32) -> KeyedLimiter {

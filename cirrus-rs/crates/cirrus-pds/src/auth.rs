@@ -54,8 +54,8 @@ pub fn verify_static_token(token: &str, expected: &str) -> Result<()> {
 pub fn verify_session_jwt(token: &str, secret: &[u8], expected_did: &str) -> Result<AuthContext> {
     use cirrus_common::jwt::{verify_hs256, Claims};
 
-    let claims: Claims = verify_hs256(token, secret)
-        .map_err(|e| PdsError::AuthFailed(e.to_string()))?;
+    let claims: Claims =
+        verify_hs256(token, secret).map_err(|e| PdsError::AuthFailed(e.to_string()))?;
 
     // Verify the subject matches expected DID
     let sub = claims.sub.as_deref().unwrap_or(&claims.iss);
@@ -84,18 +84,32 @@ pub fn create_access_token(did: &str, secret: &[u8]) -> Result<String> {
     sign_hs256(&claims, secret).map_err(|e| PdsError::AuthFailed(e.to_string()))
 }
 
-/// Creates a session refresh token.
+/// Creates a session refresh token with a unique token ID.
+///
+/// Returns both the JWT string and the token ID (for DB persistence).
 ///
 /// # Errors
 /// Returns an error if signing fails.
-pub fn create_refresh_token(did: &str, secret: &[u8]) -> Result<String> {
+pub fn create_refresh_token(did: &str, secret: &[u8]) -> Result<(String, String)> {
     use cirrus_common::jwt::{sign_hs256, Claims};
 
-    let claims = Claims::new(did, 90 * 24 * 3600) // 90 days
+    let token_id = generate_token_id();
+    let mut claims = Claims::new(did, 90 * 24 * 3600) // 90 days
         .with_sub(did)
         .with_scope("atproto:refresh");
+    claims.jti = Some(token_id.clone());
 
-    sign_hs256(&claims, secret).map_err(|e| PdsError::AuthFailed(e.to_string()))
+    let jwt = sign_hs256(&claims, secret).map_err(|e| PdsError::AuthFailed(e.to_string()))?;
+    Ok((jwt, token_id))
+}
+
+/// Generates a unique token ID for refresh tokens.
+#[must_use]
+pub fn generate_token_id() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let bytes: Vec<u8> = (0..24).map(|_| rng.gen::<u8>()).collect();
+    hex::encode(bytes)
 }
 
 /// Verifies a password against a bcrypt hash.
@@ -142,7 +156,7 @@ pub fn create_session(
     identifier: &str,
     password: &str,
     config: &SessionConfig<'_>,
-) -> Result<SessionTokens> {
+) -> Result<(SessionTokens, String)> {
     if identifier != config.did && identifier != config.handle {
         return Err(PdsError::AuthFailed("identifier not found".into()));
     }
@@ -150,33 +164,67 @@ pub fn create_session(
     verify_password(password, config.password_hash)?;
 
     let access_jwt = create_access_token(config.did, config.jwt_secret)?;
-    let refresh_jwt = create_refresh_token(config.did, config.jwt_secret)?;
+    let (refresh_jwt, token_id) = create_refresh_token(config.did, config.jwt_secret)?;
 
-    Ok(SessionTokens {
-        access_jwt,
-        refresh_jwt,
-    })
+    Ok((
+        SessionTokens {
+            access_jwt,
+            refresh_jwt,
+        },
+        token_id,
+    ))
 }
 
 /// Refreshes session tokens.
 ///
+/// Returns `SessionTokens` plus the new refresh token ID for DB persistence.
+///
 /// # Errors
 /// Returns an error if token creation fails.
-pub fn refresh_tokens(did: &str, secret: &[u8]) -> Result<SessionTokens> {
+pub fn refresh_tokens(did: &str, secret: &[u8]) -> Result<(SessionTokens, String)> {
     let access_jwt = create_access_token(did, secret)?;
-    let refresh_jwt = create_refresh_token(did, secret)?;
+    let (refresh_jwt, new_token_id) = create_refresh_token(did, secret)?;
 
-    Ok(SessionTokens {
-        access_jwt,
-        refresh_jwt,
-    })
+    Ok((
+        SessionTokens {
+            access_jwt,
+            refresh_jwt,
+        },
+        new_token_id,
+    ))
+}
+
+/// Generates a random app password in `xxxx-xxxx-xxxx-xxxx` format.
+///
+/// Uses lowercase alphanumeric characters (a-z, 2-7) encoded from
+/// random bytes, split into 4 groups of 4 characters separated by hyphens.
+#[must_use]
+pub fn generate_app_password() -> String {
+    use rand::Rng;
+    const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyz234567";
+    let mut rng = rand::thread_rng();
+    let mut password = String::with_capacity(19); // 4*4 + 3 hyphens
+    for group in 0..4u8 {
+        if group > 0 {
+            password.push('-');
+        }
+        for _ in 0..4u8 {
+            let idx = rng.gen_range(0..CHARSET.len());
+            password.push(char::from(CHARSET[idx]));
+        }
+    }
+    password
 }
 
 /// Verifies authentication from an Authorization header.
 ///
 /// # Errors
 /// Returns an error if authentication fails.
-pub fn verify_auth(auth_header: Option<&str>, secret: &[u8], expected_did: &str) -> Result<AuthContext> {
+pub fn verify_auth(
+    auth_header: Option<&str>,
+    secret: &[u8],
+    expected_did: &str,
+) -> Result<AuthContext> {
     let header = auth_header.ok_or_else(|| PdsError::AuthFailed("missing authorization".into()))?;
 
     let token = header
@@ -232,9 +280,10 @@ mod tests {
 
         let result = create_session("test.bsky.social", password, &config);
         assert!(result.is_ok());
-        let tokens = result.unwrap();
+        let (tokens, token_id) = result.unwrap();
         assert!(!tokens.access_jwt.is_empty());
         assert!(!tokens.refresh_jwt.is_empty());
+        assert!(!token_id.is_empty());
     }
 
     #[test]
@@ -285,5 +334,27 @@ mod tests {
 
         let result = create_session("test.bsky.social", "wrong-password", &config);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_generate_app_password_format() {
+        let password = generate_app_password();
+        // Should be xxxx-xxxx-xxxx-xxxx format (19 chars total)
+        assert_eq!(password.len(), 19);
+        let parts: Vec<&str> = password.split('-').collect();
+        assert_eq!(parts.len(), 4);
+        for part in &parts {
+            assert_eq!(part.len(), 4);
+            assert!(part
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
+        }
+    }
+
+    #[test]
+    fn test_generate_app_password_uniqueness() {
+        let p1 = generate_app_password();
+        let p2 = generate_app_password();
+        assert_ne!(p1, p2);
     }
 }

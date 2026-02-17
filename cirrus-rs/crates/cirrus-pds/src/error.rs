@@ -56,6 +56,10 @@ pub enum PdsError {
     #[error("lexicon error: {0}")]
     Lexicon(String),
 
+    /// Swap (optimistic concurrency) mismatch.
+    #[error("invalid swap: {0}")]
+    InvalidSwap(String),
+
     /// Rate limit exceeded.
     #[error("rate limit exceeded")]
     RateLimited,

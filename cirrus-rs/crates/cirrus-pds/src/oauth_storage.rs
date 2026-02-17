@@ -4,7 +4,7 @@
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 
 use cirrus_oauth::par::ParRequest;
 use cirrus_oauth::storage::{ClientMetadata, OAuthStorage};
@@ -28,7 +28,9 @@ impl OAuthSqliteStorage {
     /// Returns an error if database initialization fails.
     pub fn in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        let storage = Self { conn: Mutex::new(conn) };
+        let storage = Self {
+            conn: Mutex::new(conn),
+        };
         storage.init_schema()?;
         Ok(storage)
     }
@@ -39,7 +41,9 @@ impl OAuthSqliteStorage {
     /// Returns an error if database initialization fails.
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
-        let storage = Self { conn: Mutex::new(conn) };
+        let storage = Self {
+            conn: Mutex::new(conn),
+        };
         storage.init_schema()?;
         Ok(storage)
     }
@@ -107,7 +111,7 @@ impl OAuthSqliteStorage {
             CREATE INDEX IF NOT EXISTS idx_oauth_tokens_expires ON oauth_tokens(expires_at);
             CREATE INDEX IF NOT EXISTS idx_oauth_par_expires ON oauth_par_requests(expires_at);
             CREATE INDEX IF NOT EXISTS idx_oauth_nonces_expires ON oauth_nonces(expires_at);
-            "
+            ",
         )?;
 
         Ok(())
@@ -118,6 +122,30 @@ impl OAuthSqliteStorage {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0)
+    }
+
+    /// Non-consuming PAR request lookup.
+    ///
+    /// Used by the authorization consent page to display request details
+    /// without deleting the request (which is consumed later on approval).
+    pub fn get_par_request(&self, request_uri: &str) -> Option<ParRequest> {
+        self.conn.lock().query_row(
+            "SELECT client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, nonce, expires_at
+             FROM oauth_par_requests WHERE request_uri = ?",
+            params![request_uri],
+            |row| {
+                Ok(ParRequest {
+                    client_id: row.get(0)?,
+                    redirect_uri: row.get(1)?,
+                    scope: row.get(2)?,
+                    code_challenge: row.get(3)?,
+                    code_challenge_method: row.get(4)?,
+                    state: row.get(5)?,
+                    nonce: row.get(6)?,
+                    expires_at: row.get::<_, i64>(7)? as u64,
+                })
+            },
+        ).ok()
     }
 
     /// Synchronous token lookup by access token.
@@ -223,7 +251,10 @@ impl OAuthStorage for OAuthSqliteStorage {
         Ok(())
     }
 
-    async fn get_token_by_access(&self, access_token: &str) -> cirrus_oauth::Result<Option<TokenData>> {
+    async fn get_token_by_access(
+        &self,
+        access_token: &str,
+    ) -> cirrus_oauth::Result<Option<TokenData>> {
         let result = self.conn.lock().query_row(
             "SELECT access_token, refresh_token, client_id, sub, scope, dpop_jkt, issued_at, expires_at, revoked
              FROM oauth_tokens WHERE access_token = ?",
@@ -250,7 +281,10 @@ impl OAuthStorage for OAuthSqliteStorage {
         }
     }
 
-    async fn get_token_by_refresh(&self, refresh_token: &str) -> cirrus_oauth::Result<Option<TokenData>> {
+    async fn get_token_by_refresh(
+        &self,
+        refresh_token: &str,
+    ) -> cirrus_oauth::Result<Option<TokenData>> {
         let result = self.conn.lock().query_row(
             "SELECT access_token, refresh_token, client_id, sub, scope, dpop_jkt, issued_at, expires_at, revoked
              FROM oauth_tokens WHERE refresh_token = ?",
@@ -278,18 +312,24 @@ impl OAuthStorage for OAuthSqliteStorage {
     }
 
     async fn revoke_token(&self, access_token: &str) -> cirrus_oauth::Result<()> {
-        self.conn.lock().execute(
-            "UPDATE oauth_tokens SET revoked = 1 WHERE access_token = ?",
-            params![access_token],
-        ).map_err(|e| cirrus_oauth::OAuthError::ServerError(e.to_string()))?;
+        self.conn
+            .lock()
+            .execute(
+                "UPDATE oauth_tokens SET revoked = 1 WHERE access_token = ?",
+                params![access_token],
+            )
+            .map_err(|e| cirrus_oauth::OAuthError::ServerError(e.to_string()))?;
         Ok(())
     }
 
     async fn revoke_all_tokens(&self, sub: &str) -> cirrus_oauth::Result<()> {
-        self.conn.lock().execute(
-            "UPDATE oauth_tokens SET revoked = 1 WHERE sub = ?",
-            params![sub],
-        ).map_err(|e| cirrus_oauth::OAuthError::ServerError(e.to_string()))?;
+        self.conn
+            .lock()
+            .execute(
+                "UPDATE oauth_tokens SET revoked = 1 WHERE sub = ?",
+                params![sub],
+            )
+            .map_err(|e| cirrus_oauth::OAuthError::ServerError(e.to_string()))?;
         Ok(())
     }
 
@@ -299,31 +339,37 @@ impl OAuthStorage for OAuthSqliteStorage {
         let redirect_uris_json = serde_json::to_string(&metadata.redirect_uris)
             .map_err(|e| cirrus_oauth::OAuthError::ServerError(e.to_string()))?;
 
-        self.conn.lock().execute(
-            "INSERT OR REPLACE INTO oauth_client_cache
+        self.conn
+            .lock()
+            .execute(
+                "INSERT OR REPLACE INTO oauth_client_cache
              (client_id, client_name, redirect_uris, logo_uri, client_uri, cached_at)
              VALUES (?, ?, ?, ?, ?, ?)",
-            params![
-                metadata.client_id,
-                metadata.client_name,
-                redirect_uris_json,
-                metadata.logo_uri,
-                metadata.client_uri,
-                metadata.cached_at as i64
-            ],
-        ).map_err(|e| cirrus_oauth::OAuthError::ServerError(e.to_string()))?;
+                params![
+                    metadata.client_id,
+                    metadata.client_name,
+                    redirect_uris_json,
+                    metadata.logo_uri,
+                    metadata.client_uri,
+                    metadata.cached_at as i64
+                ],
+            )
+            .map_err(|e| cirrus_oauth::OAuthError::ServerError(e.to_string()))?;
         Ok(())
     }
 
-    async fn get_cached_client(&self, client_id: &str) -> cirrus_oauth::Result<Option<ClientMetadata>> {
+    async fn get_cached_client(
+        &self,
+        client_id: &str,
+    ) -> cirrus_oauth::Result<Option<ClientMetadata>> {
         let result = self.conn.lock().query_row(
             "SELECT client_id, client_name, redirect_uris, logo_uri, client_uri, cached_at
              FROM oauth_client_cache WHERE client_id = ?",
             params![client_id],
             |row| {
                 let redirect_uris_json: String = row.get(2)?;
-                let redirect_uris: Vec<String> = serde_json::from_str(&redirect_uris_json)
-                    .unwrap_or_default();
+                let redirect_uris: Vec<String> =
+                    serde_json::from_str(&redirect_uris_json).unwrap_or_default();
 
                 Ok(ClientMetadata {
                     client_id: row.get(0)?,
@@ -345,7 +391,11 @@ impl OAuthStorage for OAuthSqliteStorage {
 
     // PAR requests
 
-    async fn save_par_request(&self, request_uri: &str, request: ParRequest) -> cirrus_oauth::Result<()> {
+    async fn save_par_request(
+        &self,
+        request_uri: &str,
+        request: ParRequest,
+    ) -> cirrus_oauth::Result<()> {
         self.conn.lock().execute(
             "INSERT INTO oauth_par_requests
              (request_uri, client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, nonce, expires_at)
@@ -365,7 +415,10 @@ impl OAuthStorage for OAuthSqliteStorage {
         Ok(())
     }
 
-    async fn consume_par_request(&self, request_uri: &str) -> cirrus_oauth::Result<Option<ParRequest>> {
+    async fn consume_par_request(
+        &self,
+        request_uri: &str,
+    ) -> cirrus_oauth::Result<Option<ParRequest>> {
         let conn = self.conn.lock();
 
         let result = conn.query_row(
@@ -389,8 +442,11 @@ impl OAuthStorage for OAuthSqliteStorage {
         match result {
             Ok(data) => {
                 // Delete the request (one-time use)
-                conn.execute("DELETE FROM oauth_par_requests WHERE request_uri = ?", params![request_uri])
-                    .map_err(|e| cirrus_oauth::OAuthError::ServerError(e.to_string()))?;
+                conn.execute(
+                    "DELETE FROM oauth_par_requests WHERE request_uri = ?",
+                    params![request_uri],
+                )
+                .map_err(|e| cirrus_oauth::OAuthError::ServerError(e.to_string()))?;
                 Ok(Some(data))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -402,10 +458,13 @@ impl OAuthStorage for OAuthSqliteStorage {
 
     async fn save_nonce(&self, nonce: &str) -> cirrus_oauth::Result<()> {
         let expires_at = Self::current_timestamp() + NONCE_LIFETIME_SECS;
-        self.conn.lock().execute(
-            "INSERT OR REPLACE INTO oauth_nonces (nonce, expires_at) VALUES (?, ?)",
-            params![nonce, expires_at as i64],
-        ).map_err(|e| cirrus_oauth::OAuthError::ServerError(e.to_string()))?;
+        self.conn
+            .lock()
+            .execute(
+                "INSERT OR REPLACE INTO oauth_nonces (nonce, expires_at) VALUES (?, ?)",
+                params![nonce, expires_at as i64],
+            )
+            .map_err(|e| cirrus_oauth::OAuthError::ServerError(e.to_string()))?;
         Ok(())
     }
 
@@ -433,31 +492,39 @@ impl OAuthStorage for OAuthSqliteStorage {
         let mut total = 0u64;
 
         // Clean up expired auth codes
-        let deleted = conn.execute(
-            "DELETE FROM oauth_auth_codes WHERE expires_at < ?",
-            params![now],
-        ).map_err(|e| cirrus_oauth::OAuthError::ServerError(e.to_string()))?;
+        let deleted = conn
+            .execute(
+                "DELETE FROM oauth_auth_codes WHERE expires_at < ?",
+                params![now],
+            )
+            .map_err(|e| cirrus_oauth::OAuthError::ServerError(e.to_string()))?;
         total += deleted as u64;
 
         // Clean up expired tokens (keep revoked ones for audit, but clean very old ones)
-        let deleted = conn.execute(
-            "DELETE FROM oauth_tokens WHERE expires_at < ? AND revoked = 1",
-            params![now - 86400], // Keep revoked tokens for 1 day
-        ).map_err(|e| cirrus_oauth::OAuthError::ServerError(e.to_string()))?;
+        let deleted = conn
+            .execute(
+                "DELETE FROM oauth_tokens WHERE expires_at < ? AND revoked = 1",
+                params![now - 86400], // Keep revoked tokens for 1 day
+            )
+            .map_err(|e| cirrus_oauth::OAuthError::ServerError(e.to_string()))?;
         total += deleted as u64;
 
         // Clean up expired PAR requests
-        let deleted = conn.execute(
-            "DELETE FROM oauth_par_requests WHERE expires_at < ?",
-            params![now],
-        ).map_err(|e| cirrus_oauth::OAuthError::ServerError(e.to_string()))?;
+        let deleted = conn
+            .execute(
+                "DELETE FROM oauth_par_requests WHERE expires_at < ?",
+                params![now],
+            )
+            .map_err(|e| cirrus_oauth::OAuthError::ServerError(e.to_string()))?;
         total += deleted as u64;
 
         // Clean up expired nonces
-        let deleted = conn.execute(
-            "DELETE FROM oauth_nonces WHERE expires_at < ?",
-            params![now],
-        ).map_err(|e| cirrus_oauth::OAuthError::ServerError(e.to_string()))?;
+        let deleted = conn
+            .execute(
+                "DELETE FROM oauth_nonces WHERE expires_at < ?",
+                params![now],
+            )
+            .map_err(|e| cirrus_oauth::OAuthError::ServerError(e.to_string()))?;
         total += deleted as u64;
 
         Ok(total)
@@ -562,7 +629,10 @@ mod tests {
 
         // All should be revoked
         for i in 0..3 {
-            let token = storage.get_token_by_access(&format!("access_{i}")).await.unwrap();
+            let token = storage
+                .get_token_by_access(&format!("access_{i}"))
+                .await
+                .unwrap();
             assert!(token.unwrap().revoked);
         }
     }
@@ -587,14 +657,20 @@ mod tests {
         storage.cache_client(metadata.clone()).await.unwrap();
 
         // Get cached client
-        let retrieved = storage.get_cached_client("did:web:example.com").await.unwrap();
+        let retrieved = storage
+            .get_cached_client("did:web:example.com")
+            .await
+            .unwrap();
         assert!(retrieved.is_some());
         let retrieved = retrieved.unwrap();
         assert_eq!(retrieved.client_name, Some("Example App".to_string()));
         assert_eq!(retrieved.redirect_uris.len(), 2);
 
         // Non-existent client
-        let retrieved = storage.get_cached_client("did:web:unknown.com").await.unwrap();
+        let retrieved = storage
+            .get_cached_client("did:web:unknown.com")
+            .await
+            .unwrap();
         assert!(retrieved.is_none());
     }
 
@@ -616,7 +692,10 @@ mod tests {
         let request_uri = "urn:ietf:params:oauth:request_uri:abc123";
 
         // Save PAR request
-        storage.save_par_request(request_uri, request.clone()).await.unwrap();
+        storage
+            .save_par_request(request_uri, request.clone())
+            .await
+            .unwrap();
 
         // Consume PAR request (first time succeeds)
         let retrieved = storage.consume_par_request(request_uri).await.unwrap();
@@ -714,5 +793,44 @@ mod tests {
         // Non-existent token
         let missing = storage.get_token_sync("nonexistent");
         assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_par_request_non_consuming() {
+        let storage = OAuthSqliteStorage::in_memory().unwrap();
+
+        let request = ParRequest {
+            client_id: "client_abc".to_string(),
+            redirect_uri: "https://example.com/callback".to_string(),
+            scope: "atproto".to_string(),
+            code_challenge: "challenge_xyz".to_string(),
+            code_challenge_method: "S256".to_string(),
+            state: Some("state_123".to_string()),
+            nonce: None,
+            expires_at: OAuthSqliteStorage::current_timestamp() + 90,
+        };
+
+        let request_uri = "urn:ietf:params:oauth:request_uri:peek_test";
+        storage
+            .save_par_request(request_uri, request)
+            .await
+            .unwrap();
+
+        // Non-consuming read should return data
+        let retrieved = storage.get_par_request(request_uri);
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().client_id, "client_abc");
+
+        // Read again — should still be there (non-consuming)
+        let still_there = storage.get_par_request(request_uri);
+        assert!(still_there.is_some());
+
+        // Consuming read should still work after non-consuming reads
+        let consumed = storage.consume_par_request(request_uri).await.unwrap();
+        assert!(consumed.is_some());
+
+        // Now it should be gone
+        let gone = storage.get_par_request(request_uri);
+        assert!(gone.is_none());
     }
 }

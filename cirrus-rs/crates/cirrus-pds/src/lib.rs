@@ -13,6 +13,7 @@
 
 pub mod auth;
 pub mod blobs;
+pub mod crawlers;
 pub mod did;
 pub mod error;
 pub mod handle;
@@ -20,7 +21,9 @@ pub mod lexicon;
 pub mod middleware;
 pub mod mst;
 pub mod oauth_storage;
+pub mod pipethrough;
 pub mod rate_limit;
+pub mod read_after_write;
 pub mod repo;
 pub mod routes;
 pub mod sequencer;

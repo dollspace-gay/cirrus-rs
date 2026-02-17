@@ -117,7 +117,11 @@ fn validate_car(car_bytes: &[u8]) -> Result<()> {
     }
 
     // Verify at least one block is readable
-    if reader.next_block().context("Failed to read first block")?.is_none() {
+    if reader
+        .next_block()
+        .context("Failed to read first block")?
+        .is_none()
+    {
         anyhow::bail!("CAR file contains no blocks");
     }
 
@@ -125,8 +129,7 @@ fn validate_car(car_bytes: &[u8]) -> Result<()> {
 }
 
 fn import_car(car_bytes: &[u8], storage: &SqliteStorage) -> Result<ImportResult> {
-    let mut reader =
-        CarReader::new(Cursor::new(car_bytes)).context("Failed to parse CAR file")?;
+    let mut reader = CarReader::new(Cursor::new(car_bytes)).context("Failed to parse CAR file")?;
 
     let root_cid = reader
         .header()

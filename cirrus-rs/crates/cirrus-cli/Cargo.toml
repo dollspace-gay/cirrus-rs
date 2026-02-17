@@ -48,12 +48,16 @@ dialoguer.workspace = true
 console.workspace = true
 indicatif.workspace = true
 
+# Concurrency
+parking_lot.workspace = true
+
 # Utilities
 url.workspace = true
 chrono.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 hex.workspace = true
+dotenvy.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

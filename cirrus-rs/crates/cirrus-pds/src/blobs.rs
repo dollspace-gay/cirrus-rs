@@ -54,6 +54,44 @@ impl BlobRef {
     }
 }
 
+/// Extracts all blob CIDs referenced within a record JSON value.
+///
+/// Walks the JSON tree looking for objects with `$type: "blob"` and
+/// a `ref.$link` field, collecting the CID strings.
+#[must_use]
+pub fn extract_blob_cids(record: &serde_json::Value) -> Vec<String> {
+    let mut cids = Vec::new();
+    collect_blob_cids(record, &mut cids);
+    cids
+}
+
+fn collect_blob_cids(value: &serde_json::Value, cids: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            // Check if this object is a blob reference
+            if map.get("$type").and_then(serde_json::Value::as_str) == Some("blob") {
+                if let Some(link) = map
+                    .get("ref")
+                    .and_then(|r| r.get("$link"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    cids.push(link.to_string());
+                }
+            }
+            // Recurse into all values
+            for v in map.values() {
+                collect_blob_cids(v, cids);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                collect_blob_cids(v, cids);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Blob storage trait.
 pub trait BlobStore: Send + Sync {
     /// Stores a blob and returns its CID.
@@ -253,6 +291,70 @@ mod tests {
 
         let result = store.put_blob(&oversized, "application/octet-stream");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extract_blob_cids_from_record() {
+        let record = serde_json::json!({
+            "$type": "app.bsky.feed.post",
+            "text": "post with image",
+            "embed": {
+                "$type": "app.bsky.embed.images",
+                "images": [
+                    {
+                        "alt": "test",
+                        "image": {
+                            "$type": "blob",
+                            "ref": { "$link": "bafyimage1" },
+                            "mimeType": "image/png",
+                            "size": 1024
+                        }
+                    },
+                    {
+                        "alt": "test2",
+                        "image": {
+                            "$type": "blob",
+                            "ref": { "$link": "bafyimage2" },
+                            "mimeType": "image/jpeg",
+                            "size": 2048
+                        }
+                    }
+                ]
+            }
+        });
+
+        let cids = extract_blob_cids(&record);
+        assert_eq!(cids.len(), 2);
+        assert!(cids.contains(&"bafyimage1".to_string()));
+        assert!(cids.contains(&"bafyimage2".to_string()));
+    }
+
+    #[test]
+    fn test_extract_blob_cids_no_blobs() {
+        let record = serde_json::json!({
+            "$type": "app.bsky.feed.post",
+            "text": "just text"
+        });
+
+        let cids = extract_blob_cids(&record);
+        assert!(cids.is_empty());
+    }
+
+    #[test]
+    fn test_extract_blob_cids_profile_avatar() {
+        let record = serde_json::json!({
+            "$type": "app.bsky.actor.profile",
+            "displayName": "Test",
+            "avatar": {
+                "$type": "blob",
+                "ref": { "$link": "bafyavatar" },
+                "mimeType": "image/png",
+                "size": 512
+            }
+        });
+
+        let cids = extract_blob_cids(&record);
+        assert_eq!(cids, vec!["bafyavatar"]);
     }
 
     #[test]

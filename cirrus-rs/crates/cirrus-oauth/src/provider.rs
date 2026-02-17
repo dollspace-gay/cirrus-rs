@@ -96,12 +96,8 @@ impl<S: OAuthStorage> OAuthProvider<S> {
         pkce::verify_challenge(code_verifier, &auth_code.code_challenge)?;
 
         // Generate tokens
-        let token_data = tokens::create_tokens(
-            client_id,
-            &auth_code.sub,
-            &auth_code.scope,
-            dpop_jkt,
-        );
+        let token_data =
+            tokens::create_tokens(client_id, &auth_code.sub, &auth_code.scope, dpop_jkt);
 
         self.storage.save_token(token_data.clone()).await?;
 

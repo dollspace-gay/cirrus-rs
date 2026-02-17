@@ -77,7 +77,9 @@ impl DpopJwk {
 
         // P-256 coordinates are 32 bytes each
         if x_bytes.len() != 32 || y_bytes.len() != 32 {
-            return Err(OAuthError::DpopError("invalid key coordinate length".into()));
+            return Err(OAuthError::DpopError(
+                "invalid key coordinate length".into(),
+            ));
         }
 
         // Create uncompressed point: 0x04 || x || y
@@ -126,7 +128,9 @@ pub fn verify_proof(
 
     // Verify header
     if header.typ != "dpop+jwt" {
-        return Err(OAuthError::DpopError("invalid typ, expected dpop+jwt".into()));
+        return Err(OAuthError::DpopError(
+            "invalid typ, expected dpop+jwt".into(),
+        ));
     }
 
     if header.alg != "ES256" {
@@ -492,7 +496,13 @@ mod tests {
             .create_proof("POST", "https://example.com/token", None, Some(&nonce))
             .expect("failed to create proof");
 
-        let result = verify_proof(&proof, "POST", "https://example.com/token", None, Some(&nonce));
+        let result = verify_proof(
+            &proof,
+            "POST",
+            "https://example.com/token",
+            None,
+            Some(&nonce),
+        );
         assert!(result.is_ok());
     }
 
@@ -506,10 +516,7 @@ mod tests {
         // Try to verify with wrong method
         let result = verify_proof(&proof, "GET", "https://example.com/token", None, None);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("htm mismatch"));
+        assert!(result.unwrap_err().to_string().contains("htm mismatch"));
     }
 
     #[test]
@@ -522,22 +529,14 @@ mod tests {
         // Try to verify with wrong URI
         let result = verify_proof(&proof, "POST", "https://other.com/token", None, None);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("htu mismatch"));
+        assert!(result.unwrap_err().to_string().contains("htu mismatch"));
     }
 
     #[test]
     fn test_proof_wrong_access_token() {
         let keypair = DpopKeyPair::generate();
         let proof = keypair
-            .create_proof(
-                "GET",
-                "https://example.com/resource",
-                Some("token_a"),
-                None,
-            )
+            .create_proof("GET", "https://example.com/resource", Some("token_a"), None)
             .expect("failed to create proof");
 
         // Try to verify with different access token
@@ -549,10 +548,7 @@ mod tests {
             None,
         );
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("ath mismatch"));
+        assert!(result.unwrap_err().to_string().contains("ath mismatch"));
     }
 
     #[test]
@@ -566,7 +562,13 @@ mod tests {
         let parts: Vec<&str> = proof.split('.').collect();
         let tampered_proof = format!("{}.{}.AAAA{}", parts[0], parts[1], &parts[2][4..]);
 
-        let result = verify_proof(&tampered_proof, "POST", "https://example.com/token", None, None);
+        let result = verify_proof(
+            &tampered_proof,
+            "POST",
+            "https://example.com/token",
+            None,
+            None,
+        );
         assert!(result.is_err());
     }
 

@@ -7,9 +7,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use parking_lot::RwLock;
 use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use trust_dns_resolver::TokioAsyncResolver;
-use parking_lot::RwLock;
 
 use crate::error::{PdsError, Result};
 
@@ -62,10 +62,8 @@ impl HandleResolver {
     #[must_use]
     #[allow(clippy::expect_used)]
     pub fn new() -> Self {
-        let dns_resolver = TokioAsyncResolver::tokio(
-            ResolverConfig::default(),
-            ResolverOpts::default(),
-        );
+        let dns_resolver =
+            TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
 
         Self {
             dns_resolver,
@@ -82,10 +80,8 @@ impl HandleResolver {
     #[must_use]
     #[allow(clippy::expect_used)]
     pub fn with_config(cache_ttl: Duration, http_timeout: Duration) -> Self {
-        let dns_resolver = TokioAsyncResolver::tokio(
-            ResolverConfig::default(),
-            ResolverOpts::default(),
-        );
+        let dns_resolver =
+            TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
 
         Self {
             dns_resolver,
@@ -330,7 +326,10 @@ fn is_safe_handle(handle: &str) -> bool {
 
     // Block if any segment is purely numeric (could be IP-like)
     let segments: Vec<&str> = handle.split('.').collect();
-    if segments.iter().all(|s| s.bytes().all(|b| b.is_ascii_digit())) {
+    if segments
+        .iter()
+        .all(|s| s.bytes().all(|b| b.is_ascii_digit()))
+    {
         return false;
     }
 
@@ -402,7 +401,9 @@ mod tests {
         assert!(is_safe_handle("bsky.app"));
         assert!(is_safe_handle("alice.bsky.social"));
         assert!(is_safe_handle("my-handle.example.com"));
-        assert!(is_safe_handle("hyperintellectual-uncommercial-dudley.ngrok-free.dev"));
+        assert!(is_safe_handle(
+            "hyperintellectual-uncommercial-dudley.ngrok-free.dev"
+        ));
     }
 
     #[test]
